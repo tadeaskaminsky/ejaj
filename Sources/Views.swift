@@ -526,11 +526,19 @@ struct CalendarPanel: View {
           Text("* includes tokens of unpriced models").font(.system(size: 10)).foregroundStyle(muted)
         }
         Divider().opacity(0.5)
-        dayDetail(selected, total: totals[selected], rows: rows.filter { $0.date == selected })
+        dayDetail(
+          selected, total: totals[selected], rows: rows.filter { $0.date == selected },
+          average: dayAverage(totals.mapValues(\.cost), on: selected))
       }
     }
   }
-  @ViewBuilder private func dayDetail(_ date: String, total: DayTotal?, rows: [UsageRow]) -> some View {
+  private func difference(_ amount: Double, _ percent: Int) -> String {
+    let sign = amount >= 0 ? "+" : "−"
+    return "\(sign)\(store.money(abs(amount))) (\(sign)\(abs(percent))%)"
+  }
+  @ViewBuilder private func dayDetail(
+    _ date: String, total: DayTotal?, rows: [UsageRow], average: DayAverage?
+  ) -> some View {
     let hourly = store.hourlyRows(on: date, provider: store.provider)
     let both = store.provider == "all"
     let title = dayFormatter.date(from: date).map(CalendarPanel.dayFormatterLong.string) ?? date
@@ -550,6 +558,13 @@ struct CalendarPanel: View {
         Text(exact(total.tokens) + " tokens").foregroundStyle(muted).monospacedDigit()
       }
     }.font(.system(size: 12))
+    if total != nil, let a = average {
+      AverageBanner(
+        title: "Day", ratio: a.ratio, level: a.level,
+        detail: difference(a.difference, a.percent) + " vs the \(a.basis)",
+        trailing: (a.weekday.map { "Average \($0)" } ?? "30-day average") + ": " + store.money(a.average)
+          + " · \(a.days) \(a.days == 1 ? "day" : "days")")
+    }
     if hourly.isEmpty {
       Text(rows.isEmpty ? "No usage on this day" : "No hourly data for this day yet, refresh to collect it")
         .font(.system(size: 12)).foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 120)
@@ -558,6 +573,26 @@ struct CalendarPanel: View {
         store: store, rows: hourly, costMode: costMode, fallbackHour: hourly.compactMap(\.hour).max()
       ).id(date)
     }
+  }
+}
+// One line under the calendar day: how it compares with its average, coloured by the ratio.
+struct AverageBanner: View {
+  var title: String; var ratio: Double; var level: String; var detail: String; var trailing: String
+  var body: some View {
+    let color =
+      ratio >= 1.1
+      ? Color(red: 0.30, green: 0.74, blue: 0.45)
+      : ratio >= 0.9 ? blue : ratio >= 0.5 ? orange : Color(red: 0.93, green: 0.33, blue: 0.33)
+    HStack(spacing: 8) {
+      Image(systemName: ratio >= 1.1 ? "arrow.up.right" : ratio >= 0.9 ? "equal.circle.fill" : "arrow.down.right")
+        .frame(width: 14)
+      Text(title).fontWeight(.semibold).foregroundStyle(ink)
+      Text(level).fontWeight(.semibold)
+      Text(detail).foregroundStyle(ink).monospacedDigit().layoutPriority(1)
+      Spacer(minLength: 12)
+      Text(trailing).foregroundStyle(muted).monospacedDigit()
+    }.font(.system(size: 12)).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
+      .background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
   }
 }
 struct QuickView: View {

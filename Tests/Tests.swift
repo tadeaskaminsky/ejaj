@@ -18,6 +18,21 @@ import Foundation
       ("claude-opus-4-5-20251101", "Opus 4.5 20251101"),
     ] { precondition(modelName(id) == name, "\(id) → \(modelName(id))") }
     print("PASS: model display names")
+    // 2026-11-03 is a Tuesday. Earlier Tuesdays 10 and 20, a Monday 100, a zero day and a Tuesday too old to count.
+    let costs = [
+      "2026-10-27": 10.0, "2026-10-20": 20.0, "2026-10-26": 100.0, "2026-10-13": 0, "2026-08-04": 500,
+      "2026-11-03": 12, "2026-11-10": 999,
+    ]
+    let tue = dayAverage(costs, on: "2026-11-03")!
+    precondition(tue.weekday == "Tuesday" && tue.average == 15 && tue.days == 2 && tue.difference == -3)
+    precondition(tue.percent == -20 && tue.level == "Below average" && tue.basis == "average Tuesday")
+    // No earlier Sunday: falls back to the 30 days before it (10, 20, 100, 12).
+    let sun = dayAverage(costs, on: "2026-11-08")!
+    precondition(sun.weekday == nil && sun.days == 4 && sun.average == 35.5 && sun.cost == 0)
+    precondition(sun.level == "Way below average" && sun.basis == "30-day average")
+    precondition(dayAverage(["2026-11-03": 5], on: "2026-11-03") == nil && dayAverage(costs, on: "bad") == nil)
+    precondition(dayAverage(costs, on: "2026-11-10")!.level == "Way above average")
+    print("PASS: calendar day against the weekday and 30-day average")
 
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString);
     defer { try? FileManager.default.removeItem(at: root) }

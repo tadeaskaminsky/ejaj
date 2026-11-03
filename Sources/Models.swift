@@ -111,6 +111,42 @@ let dayFormatter: DateFormatter = {
   f.timeZone = TimeZone(identifier: "Europe/Bratislava"); return f
 }()
 
+// A calendar day's API cost against the same weekday in the 12 weeks before it. When that weekday has no
+// history yet, the 30 days before it are used. Days without any cost are left out of the average.
+struct DayAverage {
+  var cost: Double; var average: Double; var days: Int
+  var weekday: String?  // nil when the 30-day average is used
+  var ratio: Double { cost / average }
+  var difference: Double { cost - average }
+  var percent: Int { Int(((ratio - 1) * 100).rounded()) }
+  var level: String { averageLevel(ratio) }
+  var basis: String { weekday.map { "average \($0)" } ?? "30-day average" }
+}
+func averageLevel(_ ratio: Double) -> String {
+  switch ratio {
+  case 1.5...: return "Way above average"
+  case 1.1...: return "Above average"
+  case 0.9...: return "Average"
+  case 0.5...: return "Below average"
+  default: return "Way below average"
+  }
+}
+func dayAverage(_ costByDay: [String: Double], on date: String) -> DayAverage? {
+  guard let day = dayFormatter.date(from: date) else { return nil }
+  let cal = bratislava, weekday = cal.component(.weekday, from: day)
+  func before(_ days: Int) -> String { dayFormatter.string(from: cal.date(byAdding: .day, value: -days, to: day)!) }
+  let past = costByDay.filter { $0.key < date && $0.value > 0 }
+  let sameDay = past.filter {
+    $0.key >= before(84) && dayFormatter.date(from: $0.key).map { cal.component(.weekday, from: $0) } == weekday
+  }.map(\.value)
+  let base = sameDay.isEmpty ? past.filter { $0.key >= before(30) }.map(\.value) : sameDay
+  guard !base.isEmpty else { return nil }
+  let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+  return DayAverage(
+    cost: costByDay[date] ?? 0, average: base.reduce(0, +) / Double(base.count), days: base.count,
+    weekday: sameDay.isEmpty ? nil : names[weekday - 1])
+}
+
 // Codex compresses finished rollouts to .jsonl.zst. Decoded in chunks by the statically linked libzstd.
 final class ZstdStream {
   struct Failure: Error {}
