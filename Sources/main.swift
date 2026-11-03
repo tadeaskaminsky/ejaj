@@ -1,0 +1,169 @@
+import Cocoa
+import SwiftUI
+
+final class QuickPanel: NSPanel {
+  override var canBecomeKey: Bool { true }
+  override func cancelOperation(_ sender: Any?) { orderOut(nil) }
+}
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+  var status: NSStatusItem!; var popover: QuickPanel!; var outsideMonitor: Any?; var localMonitor: Any?;
+  var window: NSWindow?; var store: UsageStore!
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    NSApp.setActivationPolicy(.accessory)
+    store = UsageStore()
+    status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    if let button = status.button {
+      button.image = NSImage(systemSymbolName: "waveform.path", accessibilityDescription: "EJAJ — AI usage")
+      button.image?.isTemplate = true; button.imagePosition = .imageOnly; button.title = "";
+      button.font = NSFont.systemFont(ofSize: 11, weight: .semibold); button.target = self;
+      button.action = #selector(togglePopover); button.sendAction(on: [.leftMouseUp, .rightMouseUp]);
+      button.toolTip = "EJAJ · ChatGPT and Claude"
+    }
+    popover = QuickPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 340, height: 350), styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered, defer: false)
+    popover.title = "EJAJ · quick view"; popover.isFloatingPanel = true; popover.level = .popUpMenu;
+    popover.hidesOnDeactivate = false; popover.isReleasedWhenClosed = false; popover.isOpaque = false;
+    popover.backgroundColor = .clear; popover.hasShadow = true;
+    popover.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    let host = NSHostingView(
+      rootView: QuickView(store: store, open: { [weak self] in self?.openDashboard() }, quit: { NSApp.terminate(nil) })
+        .environment(\.locale, Locale(identifier: "en_US")).frame(maxHeight: .infinity, alignment: .top).background(
+          canvas
+        ).clipShape(RoundedRectangle(cornerRadius: 16)).overlay(
+          RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.12))))
+    host.sizingOptions = []; popover.contentView = host
+    outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+      self?.popover.orderOut(nil)
+    }
+    localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+      if let self, self.popover.isVisible, event.window != self.popover, event.window != self.status.button?.window {
+        self.popover.orderOut(nil)
+      }
+      return event
+    }
+    let menu = NSMenu(); let root = NSMenuItem(); let appMenu = NSMenu();
+    appMenu.addItem(withTitle: "About EJAJ", action: #selector(about), keyEquivalent: "");
+    appMenu.addItem(withTitle: "Open dashboard", action: #selector(openDashboard), keyEquivalent: "o");
+    appMenu.addItem(withTitle: "Quick view", action: #selector(togglePopover), keyEquivalent: "u");
+    appMenu.addItem(.separator());
+    appMenu.addItem(withTitle: "Quit EJAJ", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q");
+    root.submenu = appMenu; menu.addItem(root)
+    let edit = NSMenuItem(); let editMenu = NSMenu(title: "Edit");
+    for (title, action, key) in [("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+      editMenu.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
+    }; edit.submenu = editMenu; menu.addItem(edit); NSApp.mainMenu = menu
+    store.onChange = { [weak self] in
+      guard let self else { return }; let r = self.store.filtered(days: 1);
+      self.status.button?.toolTip =
+        "EJAJ · today \(exact(self.store.total(r))) tokens · API estimate \(self.store.money(self.store.cost(r)))"
+    }
+    store.start()
+    if !UserDefaults.standard.bool(forKey: "hasOpenedEJAJ") {
+      UserDefaults.standard.set(true, forKey: "hasOpenedEJAJ"); openDashboard()
+    }
+  }
+  @objc func about() {
+    NSApp.orderFrontStandardAboutPanel(options: [
+      .applicationName: "EJAJ",
+      .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+    ]); NSApp.activate(ignoringOtherApps: true)
+  }
+  @objc func togglePopover() {
+    if NSApp.currentEvent?.type == .rightMouseUp {
+      let m = NSMenu(); let today = store.filtered(days: 1)
+      let summary = m.addItem(
+        withTitle: "Today \(store.money(store.cost(today))) · \(exact(store.total(today))) tokens", action: nil,
+        keyEquivalent: "");
+      summary.isEnabled = false
+      m.addItem(.separator())
+      m.addItem(withTitle: "Open EJAJ", action: #selector(openDashboard), keyEquivalent: "").target = self
+      m.addItem(withTitle: "Refresh data", action: #selector(refresh), keyEquivalent: "").target = self
+      let archive = m.addItem(
+        withTitle: store.archiving ? "Archiving…" : "Archive to GitHub", action: #selector(archive),
+        keyEquivalent: "");
+      archive.target = self; archive.isEnabled = !store.archiving
+      m.addItem(.separator())
+      let login = m.addItem(withTitle: "Launch at login", action: #selector(toggleLogin), keyEquivalent: "")
+      login.target = self; login.state = store.launchAtLogin ? .on : .off
+      m.addItem(.separator());
+      m.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); status.menu = m;
+      status.button?.performClick(nil); status.menu = nil; return
+    }
+    if popover.isVisible {
+      popover.orderOut(nil)
+    } else if let button = status.button, let barWindow = button.window {
+      let anchor = barWindow.convertToScreen(button.convert(button.bounds, to: nil))
+      let screen = barWindow.screen ?? NSScreen.main!
+      let available = screen.visibleFrame
+      // Keep the whole panel below both the visible menu bar and the display cutout.
+      let safeTop = min(available.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
+      let panelTop = min(anchor.minY, safeTop) - 6
+      let height = min(CGFloat(350), max(1, panelTop - available.minY - 4))
+      let width: CGFloat = 340
+      let x = min(max(anchor.midX - width / 2, available.minX + 6), available.maxX - width - 6)
+      // Anchor below the safe area; never overlap a MacBook notch.
+      let y = panelTop - height
+      popover.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+      popover.makeKeyAndOrderFront(nil)
+    }
+  }
+  @objc func refresh() { store.refresh() }
+  @objc func archive() { store.archive() }
+  @objc func toggleLogin() { store.launchAtLogin.toggle() }
+  @objc func openDashboard() {
+    popover?.orderOut(nil)
+    if window == nil {
+      let w = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+      w.title = "EJAJ"; w.titlebarAppearsTransparent = true; w.backgroundColor = NSColor.windowBackgroundColor;
+      w.contentView = NSHostingView(
+        rootView: Dashboard(store: store).environment(\.locale, Locale(identifier: "en_US")));
+      w.minSize = NSSize(width: 880, height: 560); w.isReleasedWhenClosed = false; w.delegate = self;
+      w.setFrameAutosaveName("EJAJDashboard"); w.center(); window = w
+    }
+    window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+  }
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    if !hasVisibleWindows && !popover.isVisible { openDashboard() }; return true
+  }
+}
+func makeIcon(_ path: String) {
+  let size = NSSize(width: 1024, height: 1024);
+  guard
+    let bitmap = NSBitmapImageRep(
+      bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+      isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+    let context = NSGraphicsContext(bitmapImageRep: bitmap)
+  else { return }; NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context; NSColor.clear.setFill();
+  NSRect(origin: .zero, size: size).fill(); let rect = NSRect(x: 40, y: 40, width: 944, height: 944);
+  NSColor(red: 0.12, green: 0.16, blue: 0.22, alpha: 1).setFill();
+  NSBezierPath(roundedRect: rect, xRadius: 220, yRadius: 220).fill(); let line = NSBezierPath();
+  line.move(to: NSPoint(x: 210, y: 500)); line.line(to: NSPoint(x: 350, y: 500));
+  line.line(to: NSPoint(x: 435, y: 715)); line.line(to: NSPoint(x: 565, y: 310));
+  line.line(to: NSPoint(x: 670, y: 520)); line.line(to: NSPoint(x: 815, y: 520)); line.lineWidth = 47;
+  line.lineCapStyle = .round; line.lineJoinStyle = .round;
+  NSColor(red: 0.48, green: 0.75, blue: 0.96, alpha: 1).setStroke(); line.stroke();
+  NSColor(red: 0.94, green: 0.63, blue: 0.39, alpha: 1).setFill();
+  NSBezierPath(ovalIn: NSRect(x: 760, y: 712, width: 67, height: 67)).fill(); NSGraphicsContext.restoreGraphicsState();
+  if let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: path)) }
+}
+if CommandLine.arguments.contains("--snapshot") {
+  let result = Collector().collect(); let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys];
+  let data = try encoder.encode(result);
+  if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
+    try data.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+  } else {
+    FileHandle.standardOutput.write(data)
+  }
+} else if let i = CommandLine.arguments.firstIndex(of: "--icon"), CommandLine.arguments.count > i + 1 {
+  makeIcon(CommandLine.arguments[i + 1])
+} else {
+  MainActor.assumeIsolated {
+    let application = NSApplication.shared
+    let delegate = AppDelegate(); application.delegate = delegate
+    application.run()
+  }
+}
