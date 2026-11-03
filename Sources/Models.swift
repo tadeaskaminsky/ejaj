@@ -18,7 +18,7 @@ struct UsageRow: Codable, Identifiable {
 struct Dataset: Codable {
   var version: Int = 1; var updatedAt: String; var timezone: String = "Europe/Bratislava"; var rows: [UsageRow];
   var skipped: Int = 0; var unreadable: Int = 0
-  // Per-hour rows for yesterday and today, for the Today chart. Older snapshots have none.
+  // Per-hour rows for every day, for the calendar and the Today chart. Older snapshots have none.
   var hourly: [UsageRow]? = nil
 }
 // Prices per 1M tokens: [input, cache read, cache write (5 min), output, cache write (1 h)].
@@ -147,9 +147,8 @@ final class ZstdStream {
 final class Collector: @unchecked Sendable {
   private let collectionLock = NSLock()
   var groups: [String: UsageRow] = [:]; var seen = Set<String>(); var skipped = 0; var unreadable = 0
-  var hourGroups: [String: UsageRow] = [:]; private var hourlyFrom = ""
-  // Tests pin the first day that gets hourly rows; the app uses yesterday.
-  var hourlyFromOverride: String?
+  // Per-hour rows for every day, for the calendar and the Today chart; a few thousand rows at most.
+  var hourGroups: [String: UsageRow] = [:]
   private struct FileStamp: Equatable { let size: UInt64; let modified: Date; let created: Date; let inode: UInt64 }
   private enum CodexRecord {
     case session(String), model(String)
@@ -276,13 +275,11 @@ final class Collector: @unchecked Sendable {
     var r = UsageRow(date: day, provider: provider, model: model, source: source); let key = r.id; r = groups[key] ?? r
     r.input += max(0, vals[0]); r.cached += max(0, vals[1]); r.write += max(0, vals[2]); r.write1h += max(0, vals[3]);
     r.output += max(0, vals[4]); r.requests += 1; groups[key] = r
-    if day >= hourlyFrom {
-      var h = UsageRow(
-        date: day, provider: provider, model: model, source: source, hour: bratislava.component(.hour, from: d))
-      h = hourGroups[h.id] ?? h
-      h.input += max(0, vals[0]); h.cached += max(0, vals[1]); h.write += max(0, vals[2]); h.write1h += max(0, vals[3]);
-      h.output += max(0, vals[4]); h.requests += 1; hourGroups[h.id] = h
-    }
+    var h = UsageRow(
+      date: day, provider: provider, model: model, source: source, hour: bratislava.component(.hour, from: d))
+    h = hourGroups[h.id] ?? h
+    h.input += max(0, vals[0]); h.cached += max(0, vals[1]); h.write += max(0, vals[2]); h.write1h += max(0, vals[3]);
+    h.output += max(0, vals[4]); h.requests += 1; hourGroups[h.id] = h
   }
   func collect(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Dataset {
     collectionLock.lock(); defer { collectionLock.unlock() }
@@ -290,8 +287,6 @@ final class Collector: @unchecked Sendable {
   }
   private func collectSnapshot(home: URL) -> Dataset {
     groups.removeAll(); seen.removeAll(); hourGroups.removeAll(); skipped = 0; unreadable = 0
-    hourlyFrom =
-      hourlyFromOverride ?? dayFormatter.string(from: bratislava.date(byAdding: .day, value: -1, to: Date())!)
     // Retain only the small aggregate snapshot between refreshes.
     defer {
       groups.removeAll(keepingCapacity: false); seen.removeAll(keepingCapacity: false)

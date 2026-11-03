@@ -59,20 +59,18 @@ import Foundation
     let g = data.rows.first { $0.provider == "gpt" }!; let cl = data.rows.first { $0.provider == "claude" }!
     precondition(g.input == 130 && g.cached == 20 && g.output == 15 && g.requests == 2)
     precondition(g.model == "gpt-5.6-sol" && !data.rows.contains { $0.model == "unknown" })
-    precondition(data.hourly?.isEmpty == true)  // 2026-09-05 is long before yesterday
     // Hourly rows: 12:00Z is 14:00 in Bratislava; per-hour totals add up to the daily rows and stay out of rows.
-    let hourlyCollector = Collector(); hourlyCollector.hourlyFromOverride = "2026-09-05"
-    let withHours = hourlyCollector.collect(home: root), hours = withHours.hourly ?? []
+    let hours = data.hourly ?? []
     precondition(hours.count == 2 && hours.allSatisfy { $0.hour == 14 && $0.date == "2026-09-05" })
-    precondition(hours.reduce(0) { $0 + $1.tokens } == withHours.rows.reduce(0) { $0 + $1.tokens })
-    precondition(withHours.rows.allSatisfy { $0.hour == nil })
+    precondition(hours.reduce(0) { $0 + $1.tokens } == data.rows.reduce(0) { $0 + $1.tokens })
+    precondition(data.rows.allSatisfy { $0.hour == nil })
     let legacy = try JSONDecoder().decode(
       Dataset.self,
       from: Data(
         "{\"version\":1,\"updatedAt\":\"x\",\"timezone\":\"Europe/Bratislava\",\"rows\":[],\"skipped\":0,\"unreadable\":0}"
           .utf8))
     precondition(legacy.hourly == nil)
-    print("PASS: hourly rows for recent days, legacy snapshots without them")
+    print("PASS: hourly rows, legacy snapshots without them")
     precondition(cl.write == 10 && cl.write1h == 30 && cl.requests == 1)
     let p = UsageRow(
       date: "", provider: "claude", model: "claude-opus-5", source: "test", input: 1_000_000, cached: 1_000_000,

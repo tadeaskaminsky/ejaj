@@ -86,8 +86,9 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
   @Published var dataset: Dataset?
   @Published var busy = false
   // The last range is remembered between launches.
-  @Published var days = [1, 7, 30, 90, 0].contains(UserDefaults.standard.integer(forKey: "range"))
-    && UserDefaults.standard.object(forKey: "range") != nil ? UserDefaults.standard.integer(forKey: "range") : 30
+  @Published var days =
+    [1, 7, 30, 90, 0].contains(UserDefaults.standard.integer(forKey: "range"))
+      && UserDefaults.standard.object(forKey: "range") != nil ? UserDefaults.standard.integer(forKey: "range") : 30
   {
     didSet { UserDefaults.standard.set(days, forKey: "range") }
   }
@@ -148,9 +149,14 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
       (days == 0 || $0.date >= start) && $0.date <= end && (provider == "all" || $0.provider == provider)
     }
   }
+  func hourlyRows(on date: String, provider: String = "all") -> [UsageRow] {
+    (dataset?.hourly ?? []).filter { $0.date == date && (provider == "all" || $0.provider == provider) }
+  }
   func hourlyToday(provider: String = "all") -> [UsageRow] {
-    let today = dayFormatter.string(from: Date())
-    return (dataset?.hourly ?? []).filter { $0.date == today && (provider == "all" || $0.provider == provider) }
+    hourlyRows(on: dayFormatter.string(from: Date()), provider: provider)
+  }
+  func allRows(provider: String = "all") -> [UsageRow] {
+    (dataset?.rows ?? []).filter { provider == "all" || $0.provider == provider }
   }
   func total(_ rows: [UsageRow]) -> Int { rows.reduce(0) { $0 + $1.tokens } }
   func cost(_ rows: [UsageRow]) -> Double { rows.reduce(0) { $0 + ($1.cost ?? 0) } }
@@ -344,6 +350,8 @@ let hourLabels = (0..<24).map(hourLabel)
 struct Hourly: View {
   @ObservedObject var store: UsageStore; @ViewState private var hovered: Int? = nil
   var rows: [UsageRow]; var costMode = false
+  // Hour described under the chart when nothing is hovered; today's current hour unless the caller says otherwise.
+  var fallbackHour: Int? = nil
   func usage(_ p: HourPoint) -> Double {
     costMode ? store.exchangeRate.convert(p.cost, currency: store.currency) : Double(p.tokens)
   }
@@ -360,7 +368,7 @@ struct Hourly: View {
   }
   var body: some View {
     let points = points
-    let currentHour = bratislava.component(.hour, from: Date())
+    let currentHour = fallbackHour ?? bratislava.component(.hour, from: Date())
     VStack(alignment: .leading, spacing: 10) {
       // Hours are categories so every one of the 24 slots keeps its place, used or not.
       Chart(points) { p in
@@ -423,6 +431,133 @@ struct Hourly: View {
       Text(exact(selected.reduce(0) { $0 + $1.tokens }) + " tokens" + (unpriced ? " · excludes unpriced" : ""))
         .foregroundStyle(muted)
     }.font(.system(size: 11)).lineLimit(1).frame(height: 20)
+  }
+}
+// Month grid with the API cost of every day; the chosen day is shown hour by hour underneath.
+struct CalendarPanel: View {
+  @ObservedObject var store: UsageStore
+  var costMode: Bool
+  @ViewState private var month = CalendarPanel.startOfMonth(Date())
+  @ViewState private var selected = dayFormatter.string(from: Date())
+  static func startOfMonth(_ d: Date) -> Date {
+    bratislava.date(from: bratislava.dateComponents([.year, .month], from: d))!
+  }
+  private static let monthFormatter: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "LLLL yyyy"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  private static let dayFormatterLong: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "EEEE d MMMM yyyy"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  struct DayTotal { var tokens = 0; var cost = 0.0; var unpriced = false }
+  var rows: [UsageRow] { store.allRows(provider: store.provider) }
+  var totals: [String: DayTotal] {
+    var byDay: [String: DayTotal] = [:]
+    for r in rows {
+      var t = byDay[r.date] ?? DayTotal(); t.tokens += r.tokens
+      if let c = r.cost { t.cost += c } else { t.unpriced = true }
+      byDay[r.date] = t
+    }
+    return byDay
+  }
+  var body: some View {
+    let rows = rows, totals = totals
+    let cal = bratislava, today = dayFormatter.string(from: Date())
+    let monthKey = String(dayFormatter.string(from: month).prefix(7))
+    let days = cal.range(of: .day, in: .month, for: month)!.count
+    // Monday first: weekday 1 is Sunday.
+    let leading = (cal.component(.weekday, from: month) + 5) % 7
+    let maxCost = totals.filter { $0.key.hasPrefix(monthKey) }.map { $0.value.cost }.max() ?? 0
+    let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 7)
+    Panel {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(spacing: 10) {
+          Text("Calendar").font(.system(size: 14, weight: .semibold))
+          Spacer()
+          Button {
+            month = cal.date(byAdding: .month, value: -1, to: month)!
+          } label: {
+            Image(systemName: "chevron.left")
+          }.buttonStyle(.plain).foregroundStyle(muted)
+          Text(CalendarPanel.monthFormatter.string(from: month)).font(.system(size: 12, weight: .medium))
+            .frame(width: 130)
+          Button {
+            month = cal.date(byAdding: .month, value: 1, to: month)!
+          } label: {
+            Image(systemName: "chevron.right")
+          }.buttonStyle(.plain).foregroundStyle(monthKey == today.prefix(7) ? muted.opacity(0.3) : muted)
+            .disabled(monthKey == today.prefix(7))
+        }
+        LazyVGrid(columns: columns, spacing: 6) {
+          ForEach(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], id: \.self) { d in
+            Text(d).font(.system(size: 10, weight: .medium)).foregroundStyle(muted)
+          }
+          ForEach(-leading..<0, id: \.self) { _ in Color.clear.frame(height: 54) }
+          ForEach(1...days, id: \.self) { d in
+            let key = monthKey + String(format: "-%02d", d)
+            let total = totals[key]
+            let ratio = maxCost > 0 ? (total?.cost ?? 0) / maxCost : 0
+            let future = key > today
+            Button {
+              selected = key
+            } label: {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(String(d)).font(.system(size: 11, weight: key == today ? .bold : .medium))
+                  .foregroundStyle(future ? muted.opacity(0.5) : (total == nil ? muted : ink))
+                Spacer(minLength: 0)
+                if let total {
+                  Text(store.money(total.cost) + (total.unpriced ? "*" : "")).font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(ink).lineLimit(1).minimumScaleFactor(0.7)
+                }
+              }.padding(8).frame(maxWidth: .infinity, alignment: .leading).frame(height: 54)
+                .background(
+                  total == nil ? ink.opacity(0.03) : blue.opacity(0.1 + 0.55 * ratio),
+                  in: RoundedRectangle(cornerRadius: 8)
+                )
+                .overlay(
+                  RoundedRectangle(cornerRadius: 8).strokeBorder(selected == key ? ink : Color.clear, lineWidth: 1.5)
+                )
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain)
+          }
+        }
+        if totals.contains(where: { $0.key.hasPrefix(monthKey) && $0.value.unpriced }) {
+          Text("* includes tokens of unpriced models").font(.system(size: 10)).foregroundStyle(muted)
+        }
+        Divider().opacity(0.5)
+        dayDetail(selected, total: totals[selected], rows: rows.filter { $0.date == selected })
+      }
+    }
+  }
+  @ViewBuilder private func dayDetail(_ date: String, total: DayTotal?, rows: [UsageRow]) -> some View {
+    let hourly = store.hourlyRows(on: date, provider: store.provider)
+    let both = store.provider == "all"
+    let title = dayFormatter.date(from: date).map(CalendarPanel.dayFormatterLong.string) ?? date
+    HStack(spacing: 16) {
+      Text(title).font(.system(size: 13, weight: .semibold))
+      Spacer()
+      if let total {
+        if both {
+          ForEach(["claude", "gpt"], id: \.self) { p in
+            HStack(spacing: 6) {
+              Dot(color: providerColor(p)); Text(providerName(p)).foregroundStyle(muted)
+              Text(store.money(store.cost(rows.filter { $0.provider == p }))).monospacedDigit()
+            }
+          }
+        }
+        Text(store.money(total.cost)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+        Text(exact(total.tokens) + " tokens").foregroundStyle(muted).monospacedDigit()
+      }
+    }.font(.system(size: 12))
+    if hourly.isEmpty {
+      Text(rows.isEmpty ? "No usage on this day" : "No hourly data for this day yet, refresh to collect it")
+        .font(.system(size: 12)).foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 120)
+    } else {
+      Hourly(
+        store: store, rows: hourly, costMode: costMode, fallbackHour: hourly.compactMap(\.hour).max()
+      ).id(date)
+    }
   }
 }
 struct QuickView: View {
@@ -552,46 +687,51 @@ struct Dashboard: View {
           Text(r.text).font(.system(size: 11)).foregroundStyle(r.failed ? orange : muted).lineLimit(2).textSelection(
             .enabled)
         }
-        HStack(spacing: 16) {
-          Total(
-            title: "Tokens", value: exact(store.total(rows)),
-            parts: both ? ["claude", "gpt"].map { p in (p, exact(store.total(rows.filter { $0.provider == p }))) } : [])
-          Total(
-            title: "API cost", value: store.money(store.cost(rows)),
-            parts: both
-              ? ["claude", "gpt"].map { p in (p, store.money(store.cost(rows.filter { $0.provider == p }))) } : [],
-            note: unpricedNote(rows))
-        }
-        let hourly = store.hourlyToday(provider: store.provider)
-        Panel {
-          VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 16) {
-              Text(store.days == 1 ? "Per hour" : "Per day").font(.system(size: 14, weight: .semibold))
-              if both {
-                ForEach(["claude", "gpt"], id: \.self) { p in
-                  HStack(spacing: 6) {
-                    Dot(color: providerColor(p)); Text(providerName(p))
-                  }.font(.system(size: 11)).foregroundStyle(muted)
+        // swiftc -D CALENDAR_ONLY builds a debug binary that shows the calendar at the top, for screenshots.
+        #if !CALENDAR_ONLY
+          HStack(spacing: 16) {
+            Total(
+              title: "Tokens", value: exact(store.total(rows)),
+              parts: both
+                ? ["claude", "gpt"].map { p in (p, exact(store.total(rows.filter { $0.provider == p }))) } : [])
+            Total(
+              title: "API cost", value: store.money(store.cost(rows)),
+              parts: both
+                ? ["claude", "gpt"].map { p in (p, store.money(store.cost(rows.filter { $0.provider == p }))) } : [],
+              note: unpricedNote(rows))
+          }
+          let hourly = store.hourlyToday(provider: store.provider)
+          Panel {
+            VStack(alignment: .leading, spacing: 14) {
+              HStack(spacing: 16) {
+                Text(store.days == 1 ? "Per hour" : "Per day").font(.system(size: 14, weight: .semibold))
+                if both {
+                  ForEach(["claude", "gpt"], id: \.self) { p in
+                    HStack(spacing: 6) {
+                      Dot(color: providerColor(p)); Text(providerName(p))
+                    }.font(.system(size: 11)).foregroundStyle(muted)
+                  }
                 }
+                Spacer()
+                Picker("Metric", selection: $costMode) {
+                  Text("Tokens").tag(false); Text("Cost").tag(true)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 140)
               }
-              Spacer()
-              Picker("Metric", selection: $costMode) {
-                Text("Tokens").tag(false); Text("Cost").tag(true)
-              }.pickerStyle(.segmented).labelsHidden().frame(width: 140)
-            }
-            if store.days == 1 {
-              if hourly.isEmpty {
-                Text("No data yet").foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 250)
+              if store.days == 1 {
+                if hourly.isEmpty {
+                  Text("No data yet").foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 250)
+                } else {
+                  Hourly(store: store, rows: hourly, costMode: costMode)
+                }
+              } else if rows.isEmpty {
+                Text("No data").foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 250)
               } else {
-                Hourly(store: store, rows: hourly, costMode: costMode)
+                Trend(store: store, rows: rows, costMode: costMode)
               }
-            } else if rows.isEmpty {
-              Text("No data").foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 250)
-            } else {
-              Trend(store: store, rows: rows, costMode: costMode)
             }
           }
-        }
+        #endif
+        CalendarPanel(store: store, costMode: costMode)
         ModelPanel(store: store)
       }.padding(28).frame(maxWidth: 1200)
     }.background(canvas)
