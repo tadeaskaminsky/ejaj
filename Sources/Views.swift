@@ -526,18 +526,23 @@ struct CalendarPanel: View {
           Text("* includes tokens of unpriced models").font(.system(size: 10)).foregroundStyle(muted)
         }
         Divider().opacity(0.5)
+        let costs = totals.mapValues(\.cost)
         dayDetail(
           selected, total: totals[selected], rows: rows.filter { $0.date == selected },
-          average: dayAverage(totals.mapValues(\.cost), on: selected))
+          average: dayAverage(costs, on: selected), week: weekAverage(costs, on: selected, today: today))
       }
     }
   }
+  private static let shortDay: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "d MMM"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
   private func difference(_ amount: Double, _ percent: Int) -> String {
     let sign = amount >= 0 ? "+" : "−"
     return "\(sign)\(store.money(abs(amount))) (\(sign)\(abs(percent))%)"
   }
   @ViewBuilder private func dayDetail(
-    _ date: String, total: DayTotal?, rows: [UsageRow], average: DayAverage?
+    _ date: String, total: DayTotal?, rows: [UsageRow], average: DayAverage?, week: WeekAverage?
   ) -> some View {
     let hourly = store.hourlyRows(on: date, provider: store.provider)
     let both = store.provider == "all"
@@ -565,6 +570,18 @@ struct CalendarPanel: View {
         trailing: (a.weekday.map { "Average \($0)" } ?? "30-day average") + ": " + store.money(a.average)
           + " · \(a.days) \(a.days == 1 ? "day" : "days")")
     }
+    if let w = week {
+      let start = dayFormatter.date(from: w.monday)!, end = bratislava.date(byAdding: .day, value: 6, to: start)!
+      let sameMonth = bratislava.component(.month, from: start) == bratislava.component(.month, from: end)
+      AverageBanner(
+        title: "Week "
+          + (sameMonth
+            ? bratislava.component(.day, from: start).description + "–" + CalendarPanel.shortDay.string(from: end)
+            : CalendarPanel.shortDay.string(from: start) + " – " + CalendarPanel.shortDay.string(from: end)),
+        ratio: w.ratio, level: w.level,
+        detail: store.money(w.cost) + ", " + difference(w.difference, w.percent) + " vs the average \(w.span)",
+        trailing: "Average week: " + store.money(w.fullAverage) + " · \(w.weeks) \(w.weeks == 1 ? "week" : "weeks")")
+    }
     if hourly.isEmpty {
       Text(rows.isEmpty ? "No usage on this day" : "No hourly data for this day yet, refresh to collect it")
         .font(.system(size: 12)).foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 120)
@@ -575,7 +592,7 @@ struct CalendarPanel: View {
     }
   }
 }
-// One line under the calendar day: how it compares with its average, coloured by the ratio.
+// One line under the calendar day: how a day or week compares with its average, coloured by the ratio.
 struct AverageBanner: View {
   var title: String; var ratio: Double; var level: String; var detail: String; var trailing: String
   var body: some View {

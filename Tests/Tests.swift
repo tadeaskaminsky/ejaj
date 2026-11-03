@@ -33,6 +33,20 @@ import Foundation
     precondition(dayAverage(["2026-11-03": 5], on: "2026-11-03") == nil && dayAverage(costs, on: "bad") == nil)
     precondition(dayAverage(costs, on: "2026-11-10")!.level == "Way above average")
     print("PASS: calendar day against the weekday and 30-day average")
+    // Week of Mon 2026-11-02. Earlier weeks: 26 Oct (100 + 10), 19 Oct (20), 12 Oct (0, skipped); 3 Aug is too old.
+    let running = weekAverage(costs, on: "2026-11-03", today: "2026-11-04")!
+    precondition(running.monday == "2026-11-02" && running.days == 3 && running.span == "Mon–Wed")
+    precondition(running.cost == 12 && running.average == 65 && running.fullAverage == 65 && running.weeks == 2)
+    precondition(running.level == "Way below average")
+    let monOnly = weekAverage(costs, on: "2026-11-02", today: "2026-11-02")!
+    precondition(monOnly.days == 1 && monOnly.span == "Mon" && monOnly.average == 50 && monOnly.fullAverage == 65)
+    let finished = weekAverage(costs, on: "2026-11-08", today: "2026-11-20")!
+    precondition(finished.days == 7 && finished.span == "week" && finished.cost == 12 && finished.monday == "2026-11-02")
+    let next = weekAverage(costs, on: "2026-11-12", today: "2026-11-20")!
+    precondition(next.monday == "2026-11-09" && next.cost == 999 && next.weeks == 3 && next.level == "Way above average")
+    precondition(weekAverage(costs, on: "2026-11-20", today: "2026-11-04") == nil)
+    precondition(weekAverage(["2026-11-03": 5], on: "2026-11-03", today: "2026-11-04") == nil)
+    print("PASS: calendar week against the average week, running weeks against the same days")
 
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString);
     defer { try? FileManager.default.removeItem(at: root) }

@@ -131,6 +131,42 @@ func averageLevel(_ ratio: Double) -> String {
   default: return "Way below average"
   }
 }
+// The Monday–Sunday week of a calendar day against the 12 weeks before it. A week still running is compared
+// with the same days of the earlier weeks (Mon–Wed against Mon–Wed). Weeks without any cost are left out.
+struct WeekAverage {
+  var monday: String; var cost: Double; var average: Double; var fullAverage: Double; var weeks: Int
+  var days: Int  // 7 for a finished week, fewer while it is running
+  var ratio: Double { cost / average }
+  var difference: Double { cost - average }
+  var percent: Int { Int(((ratio - 1) * 100).rounded()) }
+  var level: String { averageLevel(ratio) }
+  var span: String {
+    let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return days == 7 ? "week" : days == 1 ? "Mon" : "Mon–" + names[days - 1]
+  }
+}
+func weekAverage(_ costByDay: [String: Double], on date: String, today: String) -> WeekAverage? {
+  guard let day = dayFormatter.date(from: date), let now = dayFormatter.date(from: today) else { return nil }
+  let cal = bratislava
+  let monday = cal.date(byAdding: .day, value: -((cal.component(.weekday, from: day) + 5) % 7), to: day)!
+  guard monday <= now else { return nil }
+  let elapsed = cal.dateComponents([.day], from: monday, to: now).day! + 1
+  let days = min(7, elapsed)
+  func sum(_ start: Date, _ count: Int) -> Double {
+    (0..<count).reduce(0) { $0 + (costByDay[dayFormatter.string(from: cal.date(byAdding: .day, value: $1, to: start)!)] ?? 0) }
+  }
+  var partial: [Double] = [], full: [Double] = []
+  for i in 1...12 {
+    let start = cal.date(byAdding: .day, value: -7 * i, to: monday)!
+    let total = sum(start, 7)
+    if total > 0 { full.append(total); partial.append(sum(start, days)) }
+  }
+  let average = partial.reduce(0, +) / Double(max(partial.count, 1))
+  guard !full.isEmpty, average > 0 else { return nil }
+  return WeekAverage(
+    monday: dayFormatter.string(from: monday), cost: sum(monday, days), average: average,
+    fullAverage: full.reduce(0, +) / Double(full.count), weeks: full.count, days: days)
+}
 func dayAverage(_ costByDay: [String: Double], on date: String) -> DayAverage? {
   guard let day = dayFormatter.date(from: date) else { return nil }
   let cal = bratislava, weekday = cal.component(.weekday, from: day)
