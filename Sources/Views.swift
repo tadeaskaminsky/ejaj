@@ -47,10 +47,7 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
   // Opens pricing.json in the default editor, seeding it with the bundled prices on first use.
   func editPricing() {
     let url = Pricing.fileURL
-    if !FileManager.default.fileExists(atPath: url.path) {
-      let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-      if let data = try? encoder.encode(Pricing.bundled) { try? data.write(to: url, options: .atomic) }
-    }
+    if !FileManager.default.fileExists(atPath: url.path) { try? Pricing.seedJSON().write(to: url, options: .atomic) }
     NSWorkspace.shared.open(url)
   }
   @Published var exchangeRate: ExchangeRate = {
@@ -63,6 +60,14 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
   }()
   private var lastExchangeAttempt = Date.distantPast
   func money(_ usd: Double) -> String { currencyAmount(exchangeRate.convert(usd, currency: currency), currency) }
+  // Price lists and other tools count in dollars, so euros come with the USD figure next to them.
+  func moneyWithUSD(_ usd: Double) -> String {
+    currency == "EUR" ? money(usd) + " (" + currencyAmount(usd, "USD") + ")" : money(usd)
+  }
+  // The line under a big euro figure: the USD amount and the ECB rate it was converted at.
+  func usdLine(_ usd: Double) -> String? {
+    currency == "EUR" ? usdNote(usd, rate: exchangeRate) : nil
+  }
   func refreshExchange() {
     guard Date().timeIntervalSince(lastExchangeAttempt) > 21600 else { return }; lastExchangeAttempt = Date()
     Task {
@@ -202,22 +207,33 @@ struct Panel<Content: View>: View {
       RoundedRectangle(cornerRadius: 14).strokeBorder(ink.opacity(0.06)))
   }
 }
-// One big number, split by provider underneath when both are shown.
+// One big number, split by provider underneath when both are shown, then by category.
 struct Total: View {
-  var title: String; var value: String; var parts: [(String, String)]; var note: String? = nil
+  var title: String; var value: String; var subtitle: String? = nil; var parts: [(String, String)]
+  var note: String? = nil; var details: [(String, String)] = []
   var body: some View {
     Panel {
       VStack(alignment: .leading, spacing: 8) {
         Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(muted);
         Text(value).font(.system(size: 32, weight: .semibold, design: .rounded)).tracking(-0.6).lineLimit(1)
           .minimumScaleFactor(0.5)
+        if let subtitle {
+          Text(subtitle).font(.system(size: 11).monospacedDigit()).foregroundStyle(muted).padding(.top, -6)
+        }
         ForEach(parts, id: \.0) { p in
           HStack(spacing: 7) {
             Dot(color: providerColor(p.0)); Text(providerName(p.0)).foregroundStyle(muted); Spacer(); Text(p.1)
           }.font(.system(size: 12).monospacedDigit())
         }
+        if !details.isEmpty {
+          Divider().opacity(0.5)
+          ForEach(details, id: \.0) { d in
+            HStack(spacing: 7) { Text(d.0).foregroundStyle(muted); Spacer(); Text(d.1) }
+              .font(.system(size: 12).monospacedDigit())
+          }
+        }
         if let note { Text(note).font(.system(size: 11)).foregroundStyle(muted) }
-      }.frame(maxWidth: .infinity, alignment: .leading)
+      }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
   }
 }
@@ -618,9 +634,14 @@ struct QuickView: View {
     let today = store.filtered(days: 1)
     VStack(alignment: .leading, spacing: 18) {
       Text("DNES SI PREJEBAL").font(.system(size: 24, weight: .heavy)).tracking(-0.4)
-      Text(store.money(store.cost(today))).font(
-        .system(size: 46, weight: .bold, design: .rounded)
-      ).tracking(-1.2).lineLimit(1).minimumScaleFactor(0.5)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(store.money(store.cost(today))).font(
+          .system(size: 46, weight: .bold, design: .rounded)
+        ).tracking(-1.2).lineLimit(1).minimumScaleFactor(0.5)
+        if let usd = store.usdLine(store.cost(today)) {
+          Text(usd).font(.system(size: 12).monospacedDigit()).foregroundStyle(muted)
+        }
+      }
       VStack(spacing: 10) {
         ForEach(["claude", "gpt"], id: \.self) { p in
           HStack {
@@ -741,17 +762,19 @@ struct Dashboard: View {
         }
         // swiftc -D CALENDAR_ONLY builds a debug binary that shows the calendar at the top, for screenshots.
         #if !CALENDAR_ONLY
+          let split = breakdown(rows), cost = store.cost(rows)
           HStack(spacing: 16) {
             Total(
               title: "Tokens", value: exact(store.total(rows)),
               parts: both
-                ? ["claude", "gpt"].map { p in (p, exact(store.total(rows.filter { $0.provider == p }))) } : [])
+                ? ["claude", "gpt"].map { p in (p, exact(store.total(rows.filter { $0.provider == p }))) } : [],
+              details: tokenDetails(split))
             Total(
-              title: "API cost", value: store.money(store.cost(rows)),
+              title: "API cost", value: store.money(cost), subtitle: store.usdLine(cost),
               parts: both
                 ? ["claude", "gpt"].map { p in (p, store.money(store.cost(rows.filter { $0.provider == p }))) } : [],
-              note: unpricedNote(rows))
-          }
+              note: unpricedNote(rows), details: costDetails(split, store.money))
+          }.fixedSize(horizontal: false, vertical: true)
           let hourly = store.hourlyToday(provider: store.provider)
           Panel {
             VStack(alignment: .leading, spacing: 14) {
@@ -798,7 +821,6 @@ struct ModelTotal: Identifiable {
   // Share of prompt tokens that were served from the cache.
   var cacheHit: Double? { prompt > 0 ? Double(cached) / Double(prompt) : nil }
 }
-func percent(_ v: Double) -> String { String(format: "%.0f %%", v * 100) }
 struct ModelPanel: View {
   @ObservedObject var store: UsageStore
   @ViewState var sort = "tokens"; @ViewState var ascending = false

@@ -84,7 +84,7 @@ import Foundation
     ]
     let line = String(data: try JSONSerialization.data(withJSONObject: msg), encoding: .utf8)!;
     try (line + "\n" + line).write(to: a.appendingPathComponent("one.jsonl"), atomically: true, encoding: .utf8)
-    let collector = Collector(); let data = collector.collect(home: root);
+    let collector = Collector(environment: [:]); let data = collector.collect(home: root);
     let g = data.rows.first { $0.provider == "gpt" }!; let cl = data.rows.first { $0.provider == "claude" }!
     precondition(g.input == 130 && g.cached == 20 && g.output == 15 && g.requests == 2)
     precondition(g.model == "gpt-5.6-sol" && !data.rows.contains { $0.model == "unknown" })
@@ -173,7 +173,7 @@ import Foundation
     try FileManager.default.createDirectory(at: zc, withIntermediateDirectories: true)
     let plain = zc.appendingPathComponent("rollout.jsonl"), packed = zc.appendingPathComponent("rollout.jsonl.zst")
     try lines.write(to: plain, atomically: true, encoding: .utf8)
-    let zcollector = Collector(), plainRows = try rowsJSON(zcollector.collect(home: z))
+    let zcollector = Collector(environment: [:]), plainRows = try rowsJSON(zcollector.collect(home: z))
     // Mid-compression both copies exist, here without session_meta, so only the file name identifies the session.
     try zst(lines).write(to: packed)
     precondition(
@@ -207,5 +207,295 @@ import Foundation
       "PASS: .jsonl.zst rollouts, .jsonl/.zst deduplication, multi-chunk and multi-frame decoding, truncated archives")
     print("PASS: refresh caching, append, truncation, creation, deletion, large records, released scratch state")
     print("PASS: native collector deduplication, cumulative deltas, cache split, pricing, metadata-only export")
+
+    // Price modifiers: each row's tier multiplies the model's list rates.
+    Pricing.load(root.appendingPathComponent("missing.json"))
+    func row(_ model: String, _ tier: String?, provider: String = "claude", searches: Int? = nil) -> UsageRow {
+      UsageRow(
+        date: "2026-11-05", provider: provider, model: model, source: "test", input: 1_000_000, cached: 1_000_000,
+        write: 1_000_000, write1h: 1_000_000, output: 1_000_000, tier: tier, searches: searches)
+    }
+    func near(_ a: Double?, _ b: Double) -> Bool { a.map { abs($0 - b) < 1e-9 } ?? false }
+    // Opus 5.5: $4 input, $0.20 cache read, $5 and $8 writes, $20 output; fast mode doubles all of it.
+    precondition(near(row("claude-opus-5-5", nil).cost, 37.2) && near(row("claude-opus-5-5", "fast").cost, 74.4))
+    precondition(near(row("claude-opus-5-5", "fast+us").cost, 74.4 * 1.1))
+    precondition(near(row("claude-opus-5-5", "us").cost, 37.2 * 1.1))
+    // Haiku 5.5 over 100K: $0.50 input, $0.05 cache read, $0.625 and $1 writes, $2.50 output.
+    precondition(near(row("claude-haiku-5-5", nil).cost, 0.935) && near(row("claude-haiku-5-5", "long").cost, 4.675))
+    // Sonnet 5.5 cache reads are 0.05x input. A model without a fast price keeps its list price.
+    precondition(near(row("claude-sonnet-5-5", nil).costParts?.read, 0.1))
+    precondition(row("claude-fable-5-1", "fast").cost == row("claude-fable-5-1", nil).cost)
+    // OpenAI long context: 2x input-side, 1.5x output. gpt-5.5 fast is 2.5x.
+    let longRow = row("gpt-6.1-sol", "long", provider: "gpt")
+    precondition(near(longRow.costParts?.input, 4) && near(longRow.costParts?.output, 15))
+    precondition(near(longRow.costParts?.read, 0.2) && near(row("gpt-5.5", "fast", provider: "gpt").costParts?.output, 75))
+    // Web searches: $10 per 1,000, on top of the tokens.
+    let searched = row("claude-opus-5-5", nil, searches: 1000)
+    precondition(near(searched.cost, 47.2) && near(searched.costParts?.search, 10) && searched.tokens == 5_000_000)
+    let split = breakdown([searched, row("claude-unpriced", "fast")])
+    precondition(split.input == 2_000_000 && split.write == 4_000_000 && split.read == 2_000_000)
+    precondition(split.output == 2_000_000 && split.searches == 1000 && near(split.cost.total, 47.2))
+    precondition(near(split.cost.write, 13) && split.tokens == 10_000_000)
+    precondition(
+      usdNote(307.58, rate: ExchangeRate(usdPerEUR: 1.1267, date: "2026-11-04")) == "$307.58 · ECB 1.1267 (2026-11-04)")
+    print("PASS: fast, US-only, long-context and web search prices, cost breakdown, USD note")
+
+    // The collector sorts every request into its tier.
+    let t = root.appendingPathComponent("tiers"), tc = t.appendingPathComponent(".codex/sessions")
+    let tp = t.appendingPathComponent(".claude/projects/p")
+    try FileManager.default.createDirectory(at: tc, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: tp, withIntermediateDirectories: true)
+    func json(_ o: [String: Any]) -> String { String(data: try! JSONSerialization.data(withJSONObject: o), encoding: .utf8)! }
+    func claude(_ id: String, _ model: String, _ usage: [String: Any]) -> String {
+      json(["timestamp": "2026-11-05T09:00:00Z", "requestId": "r-" + id, "message": ["id": id, "model": model, "usage": usage]])
+    }
+    let claudeLines = [
+      // A streamed response: the first copy reports the searches, the fuller second copy wins on tokens.
+      claude(
+        "fast", "claude-opus-5-5",
+        ["input_tokens": 1, "output_tokens": 1, "speed": "fast", "server_tool_use": ["web_search_requests": 2]]),
+      claude("fast", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 10, "speed": "fast"]),
+      claude("us", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1, "inference_geo": "us"]),
+      claude("big", "claude-haiku-5-5", ["input_tokens": 5, "cache_read_input_tokens": 150_000, "output_tokens": 1]),
+      claude("small", "claude-haiku-5-5", ["input_tokens": 5, "cache_read_input_tokens": 50_000, "output_tokens": 1]),
+      claude("plain", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1, "speed": "standard", "inference_geo": "global"]),
+    ]
+    try claudeLines.joined(separator: "\n").write(to: tp.appendingPathComponent("s.jsonl"), atomically: true, encoding: .utf8)
+    func tokenCount(_ ts: String, _ input: Int, _ cached: Int, _ output: Int, total: (Int, Int, Int)) -> String {
+      json([
+        "timestamp": ts, "type": "event_msg",
+        "payload": [
+          "type": "token_count",
+          "info": [
+            "total_token_usage": ["input_tokens": total.0, "cached_input_tokens": total.1, "output_tokens": total.2],
+            "last_token_usage": ["input_tokens": input, "cached_input_tokens": cached, "output_tokens": output],
+          ],
+        ],
+      ])
+    }
+    let codexLines = [
+      json(["type": "session_meta", "payload": ["id": "tiered"]]),
+      json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol", "service_tier": "priority"]]),
+      tokenCount("2026-11-05T09:00:00Z", 300_000, 280_000, 10, total: (300_000, 280_000, 10)),
+      json(["type": "event_msg", "payload": ["type": "thread_settings_applied", "thread_settings": ["service_tier": "default"]]]),
+      tokenCount("2026-11-05T09:01:00Z", 1000, 0, 5, total: (301_000, 280_000, 15)),
+      // A turn without a tier keeps the last one.
+      json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]]),
+      tokenCount("2026-11-05T09:02:00Z", 1000, 0, 5, total: (302_000, 280_000, 20)),
+    ]
+    try codexLines.joined(separator: "\n").write(to: tc.appendingPathComponent("c.jsonl"), atomically: true, encoding: .utf8)
+    let tcollector = Collector(environment: [:])
+    func tiers(_ d: Dataset) -> [String: UsageRow] {
+      Dictionary(uniqueKeysWithValues: d.rows.map { ($0.model + "|" + ($0.tier ?? "-"), $0) })
+    }
+    var byTier = tiers(tcollector.collect(home: t))
+    precondition(byTier.count == 7, "\(byTier.keys.sorted())")
+    let fastRow = byTier["claude-opus-5-5|fast"]!
+    precondition(fastRow.output == 10 && fastRow.requests == 1 && fastRow.searches == 2)
+    precondition(byTier["claude-opus-5-5|us"]!.requests == 1 && byTier["claude-opus-5-5|-"]!.searches == nil)
+    precondition(byTier["claude-haiku-5-5|long"]!.cached == 150_000 && byTier["claude-haiku-5-5|-"]!.cached == 50_000)
+    let fastLong = byTier["gpt-6.1-sol|fast+long"]!, standard = byTier["gpt-6.1-sol|-"]!
+    precondition(fastLong.input == 20_000 && fastLong.cached == 280_000 && fastLong.requests == 1)
+    precondition(standard.requests == 2 && standard.input == 2000)
+    let hourlyTiers = Set((tcollector.collect(home: t).hourly ?? []).compactMap(\.tier))
+    precondition(hourlyTiers == ["fast", "us", "long", "fast+long"] && tcollector.scans == 1)
+    print("PASS: speed, inference_geo, web searches, long prompts and Codex fast tier sorted into tiers")
+
+    // pricing.json object form: rates with modifiers, flat prices, and errors that leave the model alone.
+    try """
+    {"claude-haiku-5-5": {"longContext": {"above": 200000, "input": 3, "output": 3}},
+     "claude-opus-5-5": {"rates": [1, 1, 1, 1, 1], "fast": 3},
+     "claude-opus-5": {"fast": true}, "claude-sonnet-5-5": {"rates": [1, 1, 1, 1]},
+     "usOnlyMultiplier": 1.2, "webSearch": 0.02}
+    """.write(to: priceFile, atomically: true, encoding: .utf8)
+    let revision = Pricing.revision
+    Pricing.load(priceFile)
+    precondition(Pricing.fileError?.contains("claude-") == true && Pricing.revision == revision + 1)
+    precondition(near(row("claude-opus-5-5", "fast").cost, 15) && near(row("claude-opus-5-5", "us").cost, 6))
+    precondition(near(row("claude-opus-5", "fast").cost, 2 * 46.75) && near(row("claude-sonnet-5-5", nil).costParts?.read, 0.1))
+    precondition(near(row("claude-opus-5-5", nil, searches: 10).costParts?.search, 0.2))
+    // A higher threshold moves the 150K Haiku prompt back to the list price on the next refresh.
+    byTier = tiers(tcollector.collect(home: t))
+    precondition(tcollector.scans == 2 && byTier["claude-haiku-5-5|long"] == nil && byTier["claude-haiku-5-5|-"]!.requests == 2)
+    try #"{"claude-haiku-5-5": {"longContext": null}, "gpt-6.1-sol": {"longContext": {"above": 1}}}"#
+      .write(to: priceFile, atomically: true, encoding: .utf8)
+    Pricing.load(priceFile)
+    precondition(!Pricing.isLong("claude-haiku-5-5", prompt: 10_000_000) && Pricing.isLong("gpt-6.1-sol", prompt: 272_001))
+    precondition(Pricing.fileError?.contains("gpt-6.1-sol") == true)
+    precondition(tiers(tcollector.collect(home: t))["claude-haiku-5-5|long"] == nil && tcollector.scans == 3)
+    // The file Edit prices writes the first time loads back to exactly the bundled prices.
+    let seed = root.appendingPathComponent("seed.json"); try Pricing.seedJSON().write(to: seed)
+    Pricing.load(seed)
+    precondition(Pricing.fileError == nil && Pricing.table == Pricing.bundledTable)
+    precondition(Pricing.modifiers == Pricing.bundledModifiers && Pricing.usOnly == 1.1 && Pricing.webSearch == 0.01)
+    precondition(tiers(tcollector.collect(home: t))["claude-haiku-5-5|long"] != nil)
+    print("PASS: pricing.json modifiers, flat prices, invalid entries, re-sorting tiers, seeded file")
+
+    // Archived Codex sessions, ~/.config/claude, CLAUDE_CONFIG_DIR and CODEX_HOME; a linked folder counts once.
+    let f = root.appendingPathComponent("folders")
+    let custom = f.appendingPathComponent("custom"), codexHome = f.appendingPathComponent("codex-home")
+    for dir in [
+      f.appendingPathComponent(".codex/archived_sessions"), f.appendingPathComponent(".config/claude/projects/p"),
+      custom.appendingPathComponent("projects/p"), codexHome.appendingPathComponent("sessions"),
+    ] { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+    try FileManager.default.createSymbolicLink(at: f.appendingPathComponent(".claude"), withDestinationURL: custom)
+    func session(_ id: String) -> String {
+      json(["type": "session_meta", "payload": ["id": id]]) + "\n"
+        + json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]]) + "\n"
+        + tokenCount("2026-11-05T09:00:00Z", 100, 0, 1, total: (100, 0, 1))
+    }
+    try session("archived").write(
+      to: f.appendingPathComponent(".codex/archived_sessions/a.jsonl"), atomically: true, encoding: .utf8)
+    try session("home").write(to: codexHome.appendingPathComponent("sessions/h.jsonl"), atomically: true, encoding: .utf8)
+    try claude("config", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1]).write(
+      to: f.appendingPathComponent(".config/claude/projects/p/x.jsonl"), atomically: true, encoding: .utf8)
+    // The broken line counts as skipped once: a folder reached through a link and an environment variable is read once.
+    try (claude("custom", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1]) + "\nnot json").write(
+      to: custom.appendingPathComponent("projects/p/y.jsonl"), atomically: true, encoding: .utf8)
+    let fcollector = Collector(environment: ["CLAUDE_CONFIG_DIR": custom.path, "CODEX_HOME": codexHome.path])
+    let found = fcollector.collect(home: f)
+    precondition(fcollector.filesRead == 4 && found.skipped == 1, "\(fcollector.filesRead) \(found.skipped)")
+    precondition(found.rows.first { $0.provider == "gpt" }!.requests == 2)
+    precondition(found.rows.first { $0.provider == "claude" }!.requests == 2)
+    let plainHome = Collector(environment: [:]).collect(home: f)
+    precondition(plainHome.rows.first { $0.provider == "gpt" }!.requests == 1)
+    precondition(plainHome.rows.first { $0.provider == "claude" }!.requests == 2)
+    print("PASS: archived Codex sessions, ~/.config/claude, CLAUDE_CONFIG_DIR, CODEX_HOME, linked folders once")
+
+    // Codex writes thread_settings_applied before each turn, and builds before 0.163 skip the first turn.
+    // A log starts in its first snapshot's tier; a spawned subagent runs in its parent's tier when it was spawned.
+    let s = root.appendingPathComponent("spawn"), sc = s.appendingPathComponent(".codex/sessions")
+    try FileManager.default.createDirectory(at: sc, withIntermediateDirectories: true)
+    func sessionMeta(_ id: String, _ ts: String, parent: String? = nil) -> String {
+      var p: [String: Any] = ["id": id]
+      if let parent { p["parent_thread_id"] = parent }
+      return json(["timestamp": ts, "type": "session_meta", "payload": p])
+    }
+    func settings(_ ts: String, _ tier: String) -> String {
+      json([
+        "timestamp": ts, "type": "event_msg",
+        "payload": ["type": "thread_settings_applied", "thread_settings": ["service_tier": tier]],
+      ])
+    }
+    let context = json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]])
+    func one(_ ts: String) -> String { tokenCount(ts, 100, 0, 1, total: (100, 0, 1)) }
+    let spawnLogs: [String: [String]] = [
+      // Turn 1 runs before the first snapshot, turn 2 after it, turn 3 after a switch back to the standard tier.
+      "parent": [
+        sessionMeta("parent", "2026-11-05T09:00:00Z"), context, one("2026-11-05T09:01:00Z"),
+        settings("2026-11-05T09:05:00Z", "priority"), tokenCount("2026-11-05T09:06:00Z", 100, 0, 1, total: (200, 0, 2)),
+        settings("2026-11-05T09:10:00Z", "default"), tokenCount("2026-11-05T09:11:00Z", 100, 0, 1, total: (300, 0, 3)),
+      ],
+      // Spawned during the parent's first turn, before its first snapshot.
+      "early": [sessionMeta("early", "2026-11-05T09:02:00Z", parent: "parent"), context, one("2026-11-05T09:03:00Z")],
+      // Spawned after the parent switched back.
+      "late": [sessionMeta("late", "2026-11-05T09:12:00Z", parent: "parent"), context, one("2026-11-05T09:13:00Z")],
+      // A subagent of a subagent follows the chain up.
+      "nested": [sessionMeta("nested", "2026-11-05T09:04:00Z", parent: "early"), context, one("2026-11-05T09:04:30Z")],
+      // Neither a snapshot nor a parent.
+      "alone": [sessionMeta("alone", "2026-11-05T09:00:00Z"), context, one("2026-11-05T09:01:00Z")],
+    ]
+    for (name, content) in spawnLogs {
+      try content.joined(separator: "\n").write(
+        to: sc.appendingPathComponent(name + ".jsonl"), atomically: true, encoding: .utf8)
+    }
+    let spawned = Collector(environment: [:]).collect(home: s).rows
+    let fastRequests = spawned.filter { $0.tier == "fast" }.reduce(0) { $0 + $1.requests }
+    let listRequests = spawned.filter { $0.tier == nil }.reduce(0) { $0 + $1.requests }
+    // Fast: parent turns 1 and 2, early, nested. Standard: parent turn 3, late, alone.
+    precondition(fastRequests == 4 && listRequests == 3, "fast \(fastRequests), standard \(listRequests)")
+    print("PASS: Codex start tier from the first snapshot, subagents in their parent's tier at spawn")
+
+    // Review probes: prompt sizes, merged flags, the tier kept across turns, CLAUDE_CONFIG_DIR on its own.
+    let q = root.appendingPathComponent("probe"), qc = q.appendingPathComponent(".codex/sessions")
+    let qp = q.appendingPathComponent(".claude/projects/p")
+    try FileManager.default.createDirectory(at: qc, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: qp, withIntermediateDirectories: true)
+    try [
+      // Cache writes count toward Haiku's prompt; the winning copy of a stream lacks the flags the first one had.
+      claude("w", "claude-haiku-5-5", ["input_tokens": 5, "cache_creation_input_tokens": 120_000, "output_tokens": 1]),
+      claude("s", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1, "speed": "fast", "inference_geo": "us"]),
+      claude("s", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 10]),
+    ].joined(separator: "\n").write(to: qp.appendingPathComponent("s.jsonl"), atomically: true, encoding: .utf8)
+    try [
+      json(["type": "session_meta", "payload": ["id": "probe"]]),
+      json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol", "service_tier": "fast"]]),
+      tokenCount("2026-11-05T09:00:00Z", 1000, 0, 5, total: (1000, 0, 5)),
+      json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]]),
+      tokenCount("2026-11-05T09:01:00Z", 1000, 0, 5, total: (2000, 0, 10)),
+      // The totals grew by 400K, but the last request's own prompt was 100K: not a long prompt.
+      tokenCount("2026-11-05T09:02:00Z", 100_000, 0, 5, total: (402_000, 0, 15)),
+    ].joined(separator: "\n").write(to: qc.appendingPathComponent("c.jsonl"), atomically: true, encoding: .utf8)
+    let probe = tiers(Collector(environment: [:]).collect(home: q))
+    precondition(probe["claude-haiku-5-5|long"]?.requests == 1, "\(probe.keys.sorted())")
+    precondition(probe["claude-opus-5-5|fast+us"]?.output == 10, "\(probe.keys.sorted())")
+    precondition(probe["gpt-6.1-sol|fast+long"] == nil && probe["gpt-6.1-sol|fast"]?.requests == 3, "\(probe.keys.sorted())")
+    let e = root.appendingPathComponent("envonly"), ecustom = e.appendingPathComponent("custom")
+    try FileManager.default.createDirectory(
+      at: ecustom.appendingPathComponent("projects/p"), withIntermediateDirectories: true)
+    try claude("env", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1]).write(
+      to: ecustom.appendingPathComponent("projects/p/z.jsonl"), atomically: true, encoding: .utf8)
+    let envOnly = Collector(environment: ["CLAUDE_CONFIG_DIR": ecustom.path]).collect(home: e.appendingPathComponent("home"))
+    precondition(envOnly.rows.first { $0.provider == "claude" }?.requests == 1)
+    print("PASS: prompt sizes with cache writes and last requests, merged stream flags, CLAUDE_CONFIG_DIR alone")
+
+    // Fast prices per family, cache writes under OpenAI's long context, and the "over" boundaries.
+    let missing = root.appendingPathComponent("missing.json")
+    Pricing.load(missing)
+    precondition(near(row("gpt-6.1-sol", "fast", provider: "gpt").costParts?.output, 20))
+    precondition(near(row("gpt-5.6-sol", "fast", provider: "gpt").costParts?.input, 8))
+    precondition(near(row("claude-opus-4-8", "fast").cost, 2 * 46.75))
+    precondition(near(row("gpt-6.1-sol", "long", provider: "gpt").costParts?.write, 13))
+    precondition(!Pricing.isLong("claude-haiku-5-5", prompt: 100_000) && Pricing.isLong("claude-haiku-5-5", prompt: 100_001))
+    precondition(!Pricing.isLong("gpt-6.1-sol", prompt: 272_000) && Pricing.isLong("gpt-6.1-sol", prompt: 272_001))
+    // Removing an override from pricing.json takes it away on the next load.
+    try #"{"claude-opus-5-5": {"fast": 3}, "usOnlyMultiplier": 1.5, "webSearch": 1}"#
+      .write(to: priceFile, atomically: true, encoding: .utf8)
+    Pricing.load(priceFile)
+    precondition(near(row("claude-opus-5-5", "fast").cost, 111.6) && Pricing.usOnly == 1.5 && Pricing.webSearch == 1)
+    Pricing.load(missing)
+    precondition(near(row("claude-opus-5-5", "fast").cost, 74.4) && Pricing.usOnly == 1.1 && Pricing.webSearch == 0.01)
+    // Every broken entry is named and leaves its model, or the flat price, as bundled.
+    try """
+    {"claude-opus-5-5": {"fast": 3, "rates": [1, 1, 1, 1]}, "claude-opus-5": [true, 0.5, 6.25, 25, 10],
+     "claude-fable-5": [-1, 1, 12.5, 50, 20],
+     "claude-haiku-5-5": {"longContext": {"above": 1, "input": 2, "output": 2, "cacheRead": 2}},
+     "claude-sonnet-5": [{"from": "2026-01-01", "rates": [1, 1, 1, 1, 1]}, {"from": "bad", "rates": [1, 1, 1, 1, 1]}],
+     "usOnlyMultiplier": 0, "webSearch": "free"}
+    """.write(to: priceFile, atomically: true, encoding: .utf8)
+    Pricing.load(priceFile)
+    for name in [
+      "claude-opus-5-5", "claude-opus-5", "claude-fable-5", "claude-haiku-5-5", "claude-sonnet-5", "usOnlyMultiplier",
+      "webSearch",
+    ] { precondition(Pricing.fileError?.contains(name) == true, "\(name): \(Pricing.fileError ?? "nil")") }
+    precondition(near(row("claude-opus-5-5", "fast").cost, 74.4) && near(row("claude-opus-5", nil).cost, 46.75))
+    precondition(near(row("claude-fable-5", nil).costParts?.input, 10) && Pricing.isLong("claude-haiku-5-5", prompt: 100_001))
+    precondition(near(row("claude-sonnet-5", nil).costParts?.input, 2) && Pricing.usOnly == 1.1 && Pricing.webSearch == 0.01)
+    Pricing.load(missing)
+    // Edit prices writes the modifiers and the flat prices, not only the rates.
+    let seedObject = try JSONSerialization.jsonObject(with: Pricing.seedJSON()) as! [String: Any]
+    let haikuSeed = seedObject["claude-haiku-5-5"] as? [String: Any]
+    precondition((haikuSeed?["longContext"] as? [String: Any])?["above"] as? Int == 100_000)
+    precondition((seedObject["claude-opus-5-5"] as? [String: Any])?["fast"] as? Double == 2)
+    precondition(seedObject["usOnlyMultiplier"] as? Double == 1.1 && seedObject["webSearch"] as? Double == 0.01)
+    precondition(seedObject["claude-fable-5-1"] is [Any])
+    print("PASS: fast prices per family, boundaries, overrides removed on reload, every broken entry named, seed shape")
+
+    // A row saved by 1.8 has no tier or searches and keeps its price.
+    let oldRow = try JSONDecoder().decode(
+      UsageRow.self,
+      from: Data(
+        #"{"date":"2026-11-01","provider":"claude","model":"claude-opus-5-5","source":"Claude Code","input":1000000,"cached":0,"write":0,"write1h":0,"output":0,"requests":1}"#
+          .utf8))
+    precondition(oldRow.tier == nil && oldRow.searches == nil && near(oldRow.cost, 4))
+    // Shares keep a decimal below 10 %, and tiny ones read "<0.1 %".
+    precondition(share(1, of: 10_000) == "<0.1 %" && share(994, of: 10_000) == "9.9 %" && share(999, of: 10_000) == "10 %")
+    precondition(share(0, of: 10) == "0 %" && share(5, of: 0) == "")
+    let details = tokenDetails(Breakdown(input: 1, write: 0, read: 9_999, output: 0, searches: 1))
+    precondition(details.map { $0.0 } == ["Input", "Cache write", "Cache read", "Output", "Web search"])
+    precondition(details[0].1 == "1 · <0.1 %" && details[2].1 == "9,999 · 100 %" && details[4].1 == "1 search")
+    let costLines = costDetails(Breakdown(cost: CostParts(input: 1, write: 2, read: 3, output: 4)), { String($0) })
+    precondition(costLines.map { $0.1 } == ["1.0", "2.0", "3.0", "4.0"])
+    print("PASS: rows saved by 1.8, share formatting, card details")
   }
 }

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.0 (2026-11-05)
+
+- Each request is priced on its own, with what makes it dearer than the list price: fast mode (2x on Opus 5.5, Opus 5 and Opus 4.8, 2x on GPT-6 and GPT-5.6, 2.5x on gpt-5.5), Haiku 5.5 prompts over 100K tokens (5x), OpenAI prompts over 272K (2x input, 1.5x output), US-only inference (1.1x) and web searches ($10 per 1,000). On this Mac it mostly shows in Codex's priority tier, which ran through much of August and September: the API cost up to 4 November goes from $4,018 to $4,736.
+- Codex logs the tier in a settings snapshot before each turn, and builds before 0.163 skip the first turn. A Codex log now starts in its first snapshot's tier, and a spawned subagent without snapshots runs in its parent's tier at spawn time. That is about $120 of the difference above.
+- Sonnet 5.5 cache reads cost $0.10 per million tokens (0.05x input), down from the $0.20 EJAJ had.
+- Codex sessions in `~/.codex/archived_sessions` count now (10.2M tokens here, from August and October). So do `~/.config/claude/projects`, `$CLAUDE_CONFIG_DIR` and `$CODEX_HOME` when they exist.
+- pricing.json is checked more strictly: true, false and negative prices are rejected, unknown keys inside `longContext` too, and every broken entry is named instead of only the last one. `--snapshot` reads pricing.json like the app.
+- The token and cost cards split into input, cache write, cache read and output, plus web searches when there were any.
+- In euros, the dashboard and the quick view show the dollar amount and the ECB rate under the cost. The right-click line and the tooltip add the dollar amount in brackets.
+- pricing.json takes `fast`, `longContext`, `usOnlyMultiplier` and `webSearch`. Edit prices writes them out for every bundled model.
+- Checked: tests for every modifier, the collector tiers, Codex start tiers and subagents, the new pricing.json keys, the seeded file and the extra folders, with mutations of the new code caught by them. A snapshot of the real logs compared day by day with one from 1.8.1. Renders of the cards, the quick view and the calendar at 880 pt. Prices checked against Anthropic's and OpenAI's pricing pages. A review with separate correctness, tests and silent-failure passes, and its main finding (the Codex first-turn and subagent tier) checked against the logs. The running app was not clicked through.
+
 ## 1.8.1 (2026-11-04)
 
 - The calendar day detail has a second banner for the selected day's Monday to Sunday week. It shows the week's cost, its level and the difference against the 12 weeks before it, plus the average full week. Weeks with no cost are left out.

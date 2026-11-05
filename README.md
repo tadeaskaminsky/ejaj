@@ -33,8 +33,8 @@ The app is signed ad hoc, not notarized. That's fine on the Mac that built it. A
 
 EJAJ has no Dock icon. It lives in the menu bar as a small waveform.
 
-- **Click** it for the quick view: today's cost, tokens per tool and a verdict comparing today with the same weekday over the past 12 weeks. The quick view is in Slovak, on purpose.
-- **Right-click** it for a line with today's cost and tokens, then Open EJAJ, Refresh data, Archive to GitHub, Launch at login and Quit.
+- **Click** it for the quick view: today's cost, tokens per tool and a verdict comparing today with the same weekday over the past 12 weeks. The quick view is in Slovak, on purpose. In euros, a small line under the amount gives the same cost in dollars and the ECB rate used, so you can hold it against a USD price list or another tool.
+- **Right-click** it for a line with today's cost (with dollars in brackets when you count in euros) and tokens, then Open EJAJ, Refresh data, Archive to GitHub, Launch at login and Quit.
 - **Dashboard** in the quick view (or `⌘O`) opens the main window.
 
 The data refreshes every 30 seconds. The first scan of a long history can take a few seconds, and after that only changed files are read again.
@@ -44,6 +44,8 @@ The data refreshes every 30 seconds. The first scan of a long history can take a
 The two pickers at the top decide what everything below shows. **Platform** is All, Claude or Codex. **Range** is Today, 7, 30 or 90 days, or All time.
 
 Under them you get the token and API cost totals and a chart per day (per hour for Today). The Tokens/Cost switch above the chart picks what the bars measure. If a model has no known price, the API cost card says how many tokens that leaves out.
+
+Both total cards split their number into input, cache write, cache read and output. Most tokens are cache reads, usually over 90 %, and they cost a fraction of fresh input, so the token count alone says little about the bill. The cost card shows what each category adds up to, plus web searches when there were any. In euros it also gives the dollar total and the ECB rate under the big number.
 
 The **Models** table lists every model with its tokens, requests, cache hit rate (the share of prompt tokens served from the cache) and API cost. Click a column header to sort, and click again to flip the order.
 
@@ -79,7 +81,28 @@ Prices are in USD per million tokens, in this order: input, cache read, cache wr
 }
 ```
 
-Save the file and the next refresh picks it up. If an entry is broken, the dashboard names the model and that model keeps its bundled price. The other entries still apply.
+Some requests cost more than the list price, and EJAJ prices each request on its own:
+
+- **Fast mode.** Claude Code writes `"speed": "fast"` on the response. Codex writes `"service_tier": "priority"` (EJAJ takes `"fast"` too) in a settings snapshot before each turn, except before the first turn in builds older than 0.163. So a Codex log starts in the tier of its first snapshot, and a subagent without one runs in its parent's tier at the time it was spawned. Opus 5.5, Opus 5 and Opus 4.8 cost 2x. GPT-6 and GPT-5.6 cost 2x, gpt-5.5 2.5x.
+- **Long prompts.** Haiku 5.5 costs 5x once a prompt passes 100,000 tokens, cache reads and writes included. OpenAI charges 2x input and 1.5x output past 272,000.
+- **US-only inference.** `"inference_geo": "us"` costs 1.1x on every Claude rate.
+- **Web search.** $10 per 1,000 searches, on top of the tokens.
+
+These live in the same file. The object form takes `rates` (either form above), `fast` and `longContext`. Leave out what you don't change: a model keeps its bundled modifiers otherwise, and `"longContext": null` removes the premium. Two keys set the flat prices:
+
+```json
+{
+  "claude-haiku-5-5": {
+    "rates": [0.1, 0.01, 0.125, 0.5, 0.2],
+    "longContext": { "above": 100000, "input": 5, "output": 5 }
+  },
+  "claude-opus-5": { "fast": 2 },
+  "usOnlyMultiplier": 1.1,
+  "webSearch": 0.01
+}
+```
+
+Edit prices writes all of this out the first time, with every bundled model. From then on the file's values win, so a price a later EJAJ corrects stays as the file has it until you change it there or delete the file. Save the file and the next refresh picks it up. If an entry is broken, the dashboard names the model and that model keeps its bundled price and modifiers. The other entries still apply.
 
 ### 6. Archive (optional)
 
@@ -98,10 +121,10 @@ scripts/package.sh --install /Applications/EJAJ.app
 
 ## Where the numbers come from
 
-- **Claude Code**: `~/.claude/projects/**/*.jsonl`
-- **Codex**: `~/.codex/sessions/**/*.jsonl` and the compressed `.jsonl.zst` rollouts
+- **Claude Code**: `~/.claude/projects/**/*.jsonl`, `~/.config/claude/projects` and `$CLAUDE_CONFIG_DIR/projects` when they exist
+- **Codex**: `~/.codex/sessions` and `~/.codex/archived_sessions` (plus the same folders under `$CODEX_HOME`), `.jsonl` and the compressed `.jsonl.zst` rollouts
 
-EJAJ reads only the token counts, model names and timestamps from those files, never prompts or tool output. Repeated records are counted once. The last result is cached in `~/Library/Application Support/EJAJ/history.json` so the app opens with numbers straight away. Days are Europe/Bratislava days.
+EJAJ reads only the token counts, model names, timestamps and the fields that change the price (speed, service tier, inference geo, web search count) from those files, never prompts or tool output. Repeated records are counted once, also across folders, and a folder reached twice through a symlink is read once. The environment variables only count when EJAJ itself sees them, so for the app started from Finder or at login that is usually never. The last result is cached in `~/Library/Application Support/EJAJ/history.json` so the app opens with numbers straight away. Days are Europe/Bratislava days.
 
 ## Development
 

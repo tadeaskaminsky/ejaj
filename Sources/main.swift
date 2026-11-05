@@ -20,7 +20,7 @@ final class QuickPanel: NSPanel {
       button.toolTip = "EJAJ · ChatGPT and Claude"
     }
     popover = QuickPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 340, height: 350), styleMask: [.borderless, .nonactivatingPanel],
+      contentRect: NSRect(x: 0, y: 0, width: 340, height: 362), styleMask: [.borderless, .nonactivatingPanel],
       backing: .buffered, defer: false)
     popover.title = "EJAJ · quick view"; popover.isFloatingPanel = true; popover.level = .popUpMenu;
     popover.hidesOnDeactivate = false; popover.isReleasedWhenClosed = false; popover.isOpaque = false;
@@ -56,7 +56,7 @@ final class QuickPanel: NSPanel {
     store.onChange = { [weak self] in
       guard let self else { return }; let r = self.store.filtered(days: 1);
       self.status.button?.toolTip =
-        "EJAJ · today \(exact(self.store.total(r))) tokens · API estimate \(self.store.money(self.store.cost(r)))"
+        "EJAJ · today \(exact(self.store.total(r))) tokens · API estimate \(self.store.moneyWithUSD(self.store.cost(r)))"
     }
     store.start()
     if !UserDefaults.standard.bool(forKey: "hasOpenedEJAJ") {
@@ -73,7 +73,7 @@ final class QuickPanel: NSPanel {
     if NSApp.currentEvent?.type == .rightMouseUp {
       let m = NSMenu(); let today = store.filtered(days: 1)
       let summary = m.addItem(
-        withTitle: "Today \(store.money(store.cost(today))) · \(exact(store.total(today))) tokens", action: nil,
+        withTitle: "Today \(store.moneyWithUSD(store.cost(today))) · \(exact(store.total(today))) tokens", action: nil,
         keyEquivalent: "");
       summary.isEnabled = false
       m.addItem(.separator())
@@ -99,7 +99,8 @@ final class QuickPanel: NSPanel {
       // Keep the whole panel below both the visible menu bar and the display cutout.
       let safeTop = min(available.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
       let panelTop = min(anchor.minY, safeTop) - 6
-      let height = min(CGFloat(350), max(1, panelTop - available.minY - 4))
+      // 362 fits the USD line under the euro figure and a two-line verdict.
+      let height = min(CGFloat(362), max(1, panelTop - available.minY - 4))
       let width: CGFloat = 340
       let x = min(max(anchor.midX - width / 2, available.minX + 6), available.maxX - width - 6)
       // Anchor below the safe area; never overlap a MacBook notch.
@@ -151,6 +152,8 @@ func makeIcon(_ path: String) {
   if let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: path)) }
 }
 if CommandLine.arguments.contains("--snapshot") {
+  // pricing.json moves long-context thresholds, which decide the rows' tiers, so load it as the app does.
+  Pricing.load()
   let result = Collector().collect(); let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys];
   let data = try encoder.encode(result);
   if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
