@@ -88,6 +88,29 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
       } catch {}
     }
   }
+  // Claude plan limits (5-hour and weekly), read every 5 minutes. A failed read keeps the last numbers.
+  @Published var plan: PlanLimits?
+  @Published var planState = PlanState.loading
+  @Published var planFetched: Date?
+  private var lastPlanAttempt = Date.distantPast
+  private var planBusy = false
+  func refreshPlan(force: Bool = false) {
+    guard !planBusy, force || Date().timeIntervalSince(lastPlanAttempt) >= 300 else { return }
+    planBusy = true; lastPlanAttempt = Date()
+    Task.detached(priority: .utility) {
+      let result = await ClaudePlan.fetch()
+      await MainActor.run { [weak self] in
+        guard let self else { return }; self.planBusy = false
+        switch result {
+        case .success(let limits): self.plan = limits; self.planState = .ok; self.planFetched = Date()
+        case .failure(let state):
+          self.planState = state
+          // A network or server error keeps the last numbers; a lost login or a non-subscription account clears them.
+          if case .failed = state {} else { self.plan = nil; self.planFetched = nil }
+        }
+      }
+    }
+  }
   @Published var dataset: Dataset?
   @Published var busy = false
   // The last range is remembered between launches.
@@ -125,7 +148,7 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
     }
   }
   func refresh() {
-    refreshExchange()
+    refreshExchange(); refreshPlan()
     guard !busy else { return }; busy = true; error = nil
     Pricing.load()
     let collector = self.collector
@@ -515,6 +538,7 @@ struct CalendarPanel: View {
           }.buttonStyle(.plain).foregroundStyle(monthKey == today.prefix(7) ? muted.opacity(0.3) : muted)
             .disabled(monthKey == today.prefix(7))
         }
+        PlanBanner(store: store)
         LazyVGrid(columns: columns, spacing: 6) {
           ForEach(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], id: \.self) { d in
             Text(d).font(.system(size: 10, weight: .medium)).foregroundStyle(muted)
@@ -636,6 +660,94 @@ struct AverageBanner: View {
       Text(trailing).foregroundStyle(muted).monospacedDigit()
     }.font(.system(size: 12)).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
       .background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
+  }
+}
+// The Claude plan's weekly limit above the calendar: what is left, when it resets, and where the week is heading.
+// Red when the week is on course to hit the limit, orange when it would leave a good part of it unused.
+struct PlanBanner: View {
+  @ObservedObject var store: UsageStore
+  var now = Date()
+  private static let resetFormatter: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "EEE HH:mm"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  private static let timeFormatter: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "HH:mm"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  private static let red = Color(red: 0.93, green: 0.33, blue: 0.33)
+  private func pct(_ v: Double) -> String { String(format: "%.0f%%", v) }
+  var body: some View {
+    // Numbers from before the weekly reset describe a week that is over, so they give way to a note.
+    if let plan = store.plan, let week = plan.weekly, !(week.resetsAt.map { $0 <= now } ?? false) {
+      let projected = week.resetsAt.flatMap { weekProjection(used: week.used, resetsAt: $0, now: now) }
+      let color =
+        projected.map { $0 >= 100 ? PlanBanner.red : $0 >= 85 ? blue : orange }
+        ?? (week.used >= 90 ? PlanBanner.red : blue)
+      HStack(spacing: 10) {
+        Image(systemName: "gauge.with.dots.needle.67percent").frame(width: 14)
+        Text("Claude week").fontWeight(.semibold).foregroundStyle(ink)
+        Text(pct(100 - week.used) + " left").fontWeight(.semibold)
+        // Drawn by hand: ProgressView is AppKit-backed and ImageRenderer leaves it blank in renders.
+        Capsule().fill(color.opacity(0.25)).frame(width: 90, height: 6).overlay(alignment: .leading) {
+          Capsule().fill(color).frame(width: 90 * week.used / 100, height: 6)
+        }
+        Text(pace(week, projected: projected)).foregroundStyle(ink).layoutPriority(1)
+        Spacer(minLength: 12)
+        Text(trailing(plan)).foregroundStyle(muted)
+      }.font(.system(size: 12).monospacedDigit()).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12)
+        .padding(.vertical, 8).background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
+        .help("Claude plan usage as Claude Code's /usage reports it, read every 5 minutes. Click to refresh.")
+        .onTapGesture { store.refreshPlan(force: true) }
+    } else if let note = note {
+      HStack(spacing: 10) {
+        Image(systemName: "gauge.with.dots.needle.0percent").frame(width: 14)
+        Text("Claude week").fontWeight(.semibold)
+        Text(note)
+        Spacer(minLength: 0)
+      }.font(.system(size: 12)).foregroundStyle(muted).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
+        .background(ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
+        .onTapGesture { store.refreshPlan(force: true) }
+    }
+  }
+  private var note: String? {
+    if let reset = store.plan?.weekly?.resetsAt, reset <= now {
+      return "The week reset " + PlanBanner.resetFormatter.string(from: reset) + ", waiting for new numbers"
+        + (store.planState == .ok ? "" : " (" + stateText + ")")
+    }
+    switch store.planState {
+    case .loading, .ok, .notSubscription: return nil
+    case .signedOut: return "Sign in to Claude Code to see the limit: run claude in Terminal, then /login"
+    case .failed(let message): return "Limit unavailable: " + message
+    }
+  }
+  private var stateText: String {
+    if case .failed(let message) = store.planState { return message }
+    return store.planState == .signedOut ? "sign in to Claude Code" : "no data"
+  }
+  private func pace(_ week: PlanWindow, projected: Double?) -> String {
+    var text = pct(week.used) + " used"
+    // The API gives the reset as 05:59:59.555, so round to the minute: "resets Sat 07:00", not 06:59.
+    if let reset = week.resetsAt {
+      let minute = Date(timeIntervalSince1970: (reset.timeIntervalSince1970 / 60).rounded() * 60)
+      text += " · resets " + PlanBanner.resetFormatter.string(from: minute)
+    }
+    if week.used >= 100 { return text + " · limit reached" }
+    guard let projected, let reset = week.resetsAt else { return text }
+    if let out = weekRunsOut(used: week.used, resetsAt: reset, now: now) {
+      return text + " · runs out ~" + PlanBanner.resetFormatter.string(from: out)
+    }
+    return text + " · on pace for " + pct(projected)
+  }
+  private func trailing(_ plan: PlanLimits) -> String {
+    var parts = plan.models.map { "\($0.label) " + pct($0.used) }
+    if let five = plan.fiveHour { parts.append("5-hour " + pct(five.used)) }
+    // Old numbers say how old they are: after a failed read, or when no read has worked for 10 minutes.
+    if let at = store.planFetched, store.planState != .ok || now.timeIntervalSince(at) > 600 {
+      let sameDay = dayFormatter.string(from: at) == dayFormatter.string(from: now)
+      parts.append("as of " + (sameDay ? PlanBanner.timeFormatter : PlanBanner.resetFormatter).string(from: at))
+    }
+    return parts.joined(separator: " · ")
   }
 }
 struct QuickView: View {

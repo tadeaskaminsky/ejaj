@@ -1,6 +1,6 @@
 # EJAJ
 
-A macOS menu-bar app that counts the tokens Claude Code and Codex use on this Mac and shows what they would cost at standard API prices. It reads the session logs both tools already write. Nothing is sent anywhere.
+A macOS menu-bar app that counts the tokens Claude Code and Codex use on this Mac and shows what they would cost at standard API prices. It reads the session logs both tools already write, and those stay on the Mac. The only things EJAJ fetches are the daily ECB exchange rate and, when Claude Code is signed in, the limits of your Claude plan.
 
 ![Calendar panel with the day and week banners](docs/calendar.png)
 
@@ -52,6 +52,10 @@ The **Models** table lists every model with its tokens, requests, cache hit rate
 ### 4. The calendar
 
 The calendar shows one month. Each day has its API cost, and darker days cost more. A `*` means the day includes tokens of models without a price. Use `‹` and `›` to change the month.
+
+Above the grid, **Claude week** shows how much of your Claude plan's weekly limit is left, the same numbers as `/usage` in Claude Code. It gives the share used, when the week resets and where the week is heading at the pace so far ("on pace for 83%"). When that pace would hit the limit before the reset, the banner turns red and says roughly when it runs out. Orange means a good part of the week's limit would go unused. On the right are the per-model weekly limits (Fable, for example) and the 5-hour limit. The numbers are read every 5 minutes, and a click on the banner reads them again.
+
+The banner uses Claude Code's login from the Keychain (the "Claude Code-credentials" item), so it needs Claude Code signed in on this Mac: run `claude` in Terminal, then `/login`. The Claude desktop app keeps its own login, which EJAJ can't use. When the login has expired, EJAJ renews it the way Claude Code does and saves the new one back to the Keychain, so Claude Code keeps working with it. The endpoint and the renewal aren't documented by Anthropic and can change. If a read fails, the banner keeps the last numbers and says when they are from. On an API-key login there are no plan limits and the banner stays hidden.
 
 Click a day to see its totals per tool, its hour-by-hour chart and two banners:
 
@@ -130,7 +134,8 @@ EJAJ reads only the token counts, model names, timestamps and the fields that ch
 ## Development
 
 ```
-Sources/        main.swift (app, menus, icon), Models.swift (collector, pricing, averages), Views.swift (SwiftUI)
+Sources/        main.swift (app, menus, icon), Models.swift (collector, pricing, averages), Plan.swift (Claude plan
+                limits, Keychain login), Views.swift (SwiftUI)
 Tests/          Tests.swift (collector, prices, calendar math) and WindowTests.swift (needs SwiftUI and a
                 window server), plain executables of preconditions
 Vendor/zstd/    static libzstd 1.5.7 (BSD licence in Vendor/zstd/LICENSE)
@@ -140,7 +145,7 @@ scripts/        build.sh, package.sh, render-calendar.sh
 ```
 
 - `scripts/build.sh` builds `build/EJAJ` and runs the tests.
-- `scripts/render-calendar.sh` renders the calendar from your cached history to `build/calendar.png`, which is handy for checking that the banners fit.
+- `scripts/render-calendar.sh` renders the calendar from your cached history to `build/calendar.png`, which is handy for checking that the banners fit. A third argument adds the Claude week banner: `plan` with sample numbers, `signedout` with its sign-in note, `live` with your real numbers.
 - `build/EJAJ --snapshot out.json` writes what the collector found as JSON, without starting the app.
 
 The version lives in `Resources/Info.plist`, and the history is in [CHANGELOG.md](CHANGELOG.md). If you work on this with Claude Code, the skills in `.claude/skills` cover building, releasing and checking the calendar layout.

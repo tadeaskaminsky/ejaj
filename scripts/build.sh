@@ -12,12 +12,12 @@ compile() {
   print -r -- "$log" | grep -v -E "warning:|^\s*$|note:|^\s+[0-9]+ \||^\s+\|" | grep -B1 -A3 "error:"
   return $rc
 }
-compile Sources/main.swift Sources/Models.swift Sources/Views.swift Vendor/zstd/libzstd.a -o build/EJAJ \
+compile Sources/main.swift Sources/Models.swift Sources/Plan.swift Sources/Views.swift Vendor/zstd/libzstd.a -o build/EJAJ \
   || { echo "BUILD FAILED: build/EJAJ"; exit 1 }
-compile Sources/Models.swift Tests/Tests.swift Vendor/zstd/libzstd.a -o build/collector-tests \
+compile Sources/Models.swift Sources/Plan.swift Tests/Tests.swift Vendor/zstd/libzstd.a -o build/collector-tests \
   || { echo "BUILD FAILED: build/collector-tests"; exit 1 }
 build/collector-tests || { echo "TESTS FAILED"; exit 1 }
-compile Sources/Models.swift Sources/Views.swift Tests/WindowTests.swift Vendor/zstd/libzstd.a -o build/window-tests \
+compile Sources/Models.swift Sources/Plan.swift Sources/Views.swift Tests/WindowTests.swift Vendor/zstd/libzstd.a -o build/window-tests \
   || { echo "BUILD FAILED: build/window-tests"; exit 1 }
 out=$(build/window-tests 2>&1); rc=$?
 print -r -- "$out" | grep -v "^Charts:"

@@ -516,5 +516,137 @@ import Foundation
     precondition(counted(history, from: "2026-04-28").map(\.date) == Array(history.map(\.date).dropFirst()))
     precondition(counted(history, from: nil).count == 5 && counted(history, from: "2026-12-01").isEmpty)
     print("PASS: Count from days after 30 idle days, days left out before it")
+    try planTests()
+  }
+  static func planTests() throws {
+    let usage = Data(
+      #"""
+      {"five_hour": {"utilization": 32.0, "resets_at": "2026-11-06T17:09:59.555Z"},
+       "seven_day": {"utilization": 76, "resets_at": "2026-11-07T05:59:59+00:00"},
+       "seven_day_opus": null, "seven_day_sonnet": {"utilization": 140, "resets_at": null},
+       "model_scoped": [{"display_name": "Fable", "utilization": 68.5, "resets_at": "2026-11-07T05:59:59.555Z"},
+                        {"display_name": "Broken", "utilization": true}]}
+      """#.utf8)
+    let limits = parsePlanLimits(usage)!
+    precondition(limits.fiveHour?.used == 32 && limits.weekly?.used == 76)
+    precondition(limits.fiveHour?.resetsAt == isoDate("2026-11-06T17:09:59.555Z") && limits.fiveHour?.resetsAt != nil)
+    precondition(limits.weekly?.resetsAt == Date(timeIntervalSince1970: 1_794_031_199))
+    // Booleans aren't numbers, null windows are skipped, values are clamped to 0...100.
+    precondition(limits.models.map(\.label) == ["Fable", "Sonnet"] && limits.models[1].used == 100)
+    precondition(limits.models[0].used == 68.5 && limits.models[1].resetsAt == nil)
+    precondition(parsePlanLimits(Data(#"{"five_hour": null, "seven_day": null}"#.utf8)) == nil)
+    precondition(parsePlanLimits(Data("[]".utf8)) == nil && parsePlanLimits(Data("nope".utf8)) == nil)
+    // Only an all-null answer means "no plan". A shape EJAJ doesn't know is a failure, which keeps the old numbers.
+    precondition(parsePlanUsage(usage) == .limits(limits))
+    precondition(parsePlanUsage(Data(#"{"five_hour": null, "seven_day": null}"#.utf8)) == .noPlan)
+    for odd in [#"{"fiveHour": {"utilization": 3}}"#, #"{"five_hour": {"utilization": "3"}, "seven_day": null}"#,
+      #"{"five_hour": null}"#, "[]", "<html>"]
+    {
+      precondition(parsePlanUsage(Data(odd.utf8)) == .unexpected, odd)
+    }
+    // One window is enough: a plan with only the 5-hour or only the weekly window still shows it.
+    let onlyFive = parsePlanLimits(Data(#"{"five_hour": {"utilization": 10}, "seven_day": null}"#.utf8))!
+    precondition(onlyFive.fiveHour?.used == 10 && onlyFive.weekly == nil)
+    let onlyWeek = parsePlanLimits(Data(#"{"five_hour": null, "seven_day": {"utilization": 20}}"#.utf8))!
+    precondition(onlyWeek.weekly?.used == 20 && onlyWeek.fiveHour == nil)
+    // model_scoped wins over the older per-model keys, and values below 0 clamp to 0.
+    let scopedJSON =
+      #"{"seven_day": {"utilization": -3}, "seven_day_sonnet": {"utilization": 50},"#
+      + #" "model_scoped": [{"display_name": "Sonnet", "utilization": 5}]}"#
+    let scoped = parsePlanLimits(Data(scopedJSON.utf8))!
+    precondition(scoped.models.map(\.label) == ["Sonnet"] && scoped.models[0].used == 5 && scoped.weekly?.used == 0)
+    // The shape the endpoint returned on 6 Nov 2026: per-model limits only in "limits", microsecond timestamps.
+    let real = parsePlanLimits(
+      Data(
+        #"""
+        {"five_hour": {"utilization": 38.0, "resets_at": "2026-11-06T17:10:00.213324+00:00"},
+         "seven_day": {"utilization": 77.0, "resets_at": "2026-11-07T06:00:00.213343+00:00"},
+         "seven_day_opus": null, "seven_day_sonnet": null,
+         "limits": [
+          {"kind": "session", "percent": 38, "resets_at": "2026-11-06T17:10:00.213324+00:00", "scope": null},
+          {"kind": "weekly_all", "percent": 77, "resets_at": "2026-11-07T06:00:00.213343+00:00", "scope": null},
+          {"kind": "weekly_scoped", "percent": 68, "resets_at": "2026-11-07T06:00:00.213483+00:00",
+           "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}},
+          {"kind": "weekly_scoped", "percent": 5, "scope": {"model": null, "surface": "cowork"}}]}
+        """#.utf8))!
+    precondition(real.fiveHour?.used == 38 && real.weekly?.used == 77)
+    precondition(real.models.map(\.label) == ["Fable"] && real.models[0].used == 68)
+    precondition(real.weekly?.resetsAt.map { abs($0.timeIntervalSince1970 - 1_794_031_200.213) < 0.001 } == true)
+    // A week that resets in 24 hours is 6/7 through; 60 % used by then projects to 70 %.
+    let reset = Date(timeIntervalSince1970: 1_794_031_199)
+    precondition(abs(weekElapsed(resetsAt: reset, now: reset.addingTimeInterval(-86_400)) - 6.0 / 7) < 1e-9)
+    precondition(abs(weekProjection(used: 60, resetsAt: reset, now: reset.addingTimeInterval(-86_400))! - 70) < 1e-9)
+    precondition(weekElapsed(resetsAt: reset, now: reset.addingTimeInterval(-700_000)) == 0)
+    precondition(weekElapsed(resetsAt: reset, now: reset.addingTimeInterval(10)) == 1)
+    // Under 12 hours into the week there is no projection; at exactly 12 there is.
+    precondition(weekProjection(used: 5, resetsAt: reset, now: reset.addingTimeInterval(-604_800 + 43_000)) == nil)
+    precondition(weekProjection(used: 5, resetsAt: reset, now: reset.addingTimeInterval(-604_800 + 43_200)) != nil)
+    // Runs out: a day into the week with 50 % used runs out 2 days in; 10 % a day in lasts to the reset.
+    let dayIn = reset.addingTimeInterval(-604_800 + 86_400)
+    precondition(weekRunsOut(used: 50, resetsAt: reset, now: dayIn) == reset.addingTimeInterval(-604_800 + 172_800))
+    precondition(weekRunsOut(used: 10, resetsAt: reset, now: dayIn) == nil)
+    precondition(weekRunsOut(used: 0, resetsAt: reset, now: dayIn) == nil)
+    precondition(weekRunsOut(used: 90, resetsAt: reset, now: reset.addingTimeInterval(-604_800 + 3_600)) == nil)
+    print("PASS: plan usage parsing, clamping, week elapsed, projection and runs-out time")
+
+    let stored = Data(
+      #"""
+      {"claudeAiOauth": {"accessToken": "old", "refreshToken": "r1", "expiresAt": 1793200000000,
+        "refreshTokenExpiresAt": 1795000000000, "scopes": ["user:inference", "user:profile"],
+        "subscriptionType": "team"},
+       "mcpOAuth": {"server": {"accessToken": "keep"}}}
+      """#.utf8)
+    let token = parseClaudeToken(stored)!
+    precondition(token.access == "old" && token.refresh == "r1" && token.scopes == ["user:inference", "user:profile"])
+    precondition(token.expiresAt == Date(timeIntervalSince1970: 1_793_200_000))
+    precondition(token.expired(at: Date(timeIntervalSince1970: 1_793_199_900)))  // inside the 2-minute margin
+    precondition(!token.expired(at: Date(timeIntervalSince1970: 1_793_199_000)))
+    precondition(token.canRefresh(at: Date(timeIntervalSince1970: 1_794_000_000)))
+    precondition(!token.canRefresh(at: Date(timeIntervalSince1970: 1_795_000_001)))
+    // The broken login on this Mac in November 2026: expiresAt 0 is expired, no refresh token means signed out.
+    let dead = parseClaudeToken(Data(#"{"claudeAiOauth": {"accessToken": "x", "expiresAt": 0}}"#.utf8))!
+    precondition(dead.expired(at: Date()) && !dead.canRefresh(at: Date()))
+    precondition(parseClaudeToken(Data(#"{"claudeAiOauth": {"accessToken": ""}}"#.utf8)) == nil)
+    precondition(parseClaudeToken(Data(#"{"other": {}}"#.utf8)) == nil)
+    // A refresh token without a stored lifetime can still be used.
+    let noLifetime = parseClaudeToken(
+      Data(#"{"claudeAiOauth": {"accessToken": "a", "refreshToken": "r", "expiresAt": 0}}"#.utf8))!
+    precondition(noLifetime.canRefresh(at: Date()) && noLifetime.refreshExpiresAt == nil)
+    precondition(
+      parseClaudeToken(Data(#"{"claudeAiOauth": {"accessToken": "a", "refreshToken": ""}}"#.utf8))!.refresh == nil)
+    // The account in `security find-generic-password` output; a quote-free name only.
+    let attributes = """
+      keychain: "/Users/x/Library/Keychains/login.keychain-db"
+      attributes:
+          "acct"<blob>="tadeas"
+          "svce"<blob>="Claude Code-credentials"
+      """
+    precondition(keychainAccount(fromAttributes: attributes) == "tadeas")
+    precondition(keychainAccount(fromAttributes: #"    "acct"<blob>=0x74616465  "tade""#) == nil)
+    precondition(keychainAccount(fromAttributes: #"    "acct"<blob>="""#) == "")
+    precondition(keychainAccount(fromAttributes: "nothing here") == nil)
+
+    let now = Date(timeIntervalSince1970: 1_793_300_000)
+    let merged = applyTokenRefresh(
+      stored, response: Data(#"{"access_token": "new", "refresh_token": "r2", "expires_in": 28800}"#.utf8), now: now)!
+    let fresh = parseClaudeToken(merged)!
+    precondition(fresh.access == "new" && fresh.refresh == "r2")
+    precondition(fresh.expiresAt == now.addingTimeInterval(28_800) && fresh.refreshExpiresAt == token.refreshExpiresAt)
+    let root = try JSONSerialization.jsonObject(with: merged) as! [String: Any]
+    let oauth = root["claudeAiOauth"] as! [String: Any]
+    precondition(oauth["subscriptionType"] as? String == "team" && oauth["expiresAt"] as? Int64 == 1_793_328_800_000)
+    precondition(((root["mcpOAuth"] as? [String: Any])?["server"] as? [String: Any])?["accessToken"] as? String == "keep")
+    // No new refresh token keeps the old one; a new lifetime for it is stored.
+    let kept = parseClaudeToken(
+      applyTokenRefresh(
+        stored,
+        response: Data(
+          #"{"access_token": "n", "refresh_token": "", "expires_in": 60, "refresh_token_expires_in": 100}"#.utf8),
+        now: now)!)!
+    precondition(kept.refresh == "r1" && kept.refreshExpiresAt == now.addingTimeInterval(100))
+    for bad in [#"{"expires_in": 60}"#, #"{"access_token": "n"}"#, #"{"access_token": "n", "expires_in": 0}"#, "x"] {
+      precondition(applyTokenRefresh(stored, response: Data(bad.utf8), now: now) == nil, bad)
+    }
+    print("PASS: Claude Code credentials, refresh merge keeps other keys")
   }
 }
