@@ -114,6 +114,8 @@ final class QuickPanel: NSPanel {
   @objc func toggleLogin() { store.launchAtLogin.toggle() }
   @objc func openDashboard() {
     popover?.orderOut(nil)
+    // A window that is already up keeps its size. A minimized one comes back as it was.
+    let fill = window.map { !$0.isVisible && !$0.isMiniaturized } ?? true
     if window == nil {
       let w = NSWindow(
         contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760),
@@ -121,8 +123,24 @@ final class QuickPanel: NSPanel {
       w.title = "EJAJ"; w.titlebarAppearsTransparent = true; w.backgroundColor = NSColor.windowBackgroundColor;
       w.contentView = NSHostingView(
         rootView: Dashboard(store: store).environment(\.locale, Locale(identifier: "en_US")));
-      w.minSize = NSSize(width: 880, height: 560); w.isReleasedWhenClosed = false; w.delegate = self;
-      w.setFrameAutosaveName("EJAJDashboard"); w.center(); window = w
+      w.minSize = NSSize(width: 880, height: 560); w.isReleasedWhenClosed = false; w.delegate = self; window = w
+    }
+    // Open filling the screen between the menu bar and the Dock, on the display the click came from. Zooming
+    // from a smaller frame leaves AppKit that frame to return to, so a title-bar double-click shrinks the
+    // window to the size it last had (1000 x 760 the first time) instead of 20 pt off the full screen.
+    if fill, let w = window {
+      // NSMouseInRect counts the top pixel row, where the pointer sits after a click on the menu bar.
+      let mouse = NSEvent.mouseLocation
+      if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
+        let v = screen.visibleFrame
+        let last = w.isZoomed ? NSSize(width: 1000, height: 760) : w.frame.size
+        if w.isZoomed { w.zoom(nil) }  // forget the frame an earlier open left to return to
+        let size = NSSize(width: min(last.width, v.width), height: min(last.height, v.height))
+        w.setFrame(
+          NSRect(x: v.midX - size.width / 2, y: v.midY - size.height / 2, width: size.width, height: size.height),
+          display: false)
+        if !w.isZoomed { w.zoom(nil) }
+      }
     }
     window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
   }

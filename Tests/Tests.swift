@@ -497,5 +497,24 @@ import Foundation
     let costLines = costDetails(Breakdown(cost: CostParts(input: 1, write: 2, read: 3, output: 4)), { String($0) })
     precondition(costLines.map { $0.1 } == ["1.0", "2.0", "3.0", "4.0"])
     print("PASS: rows saved by 1.8, share formatting, card details")
+
+    // Count from: a day of use after 30 or more idle days can start the history. This Mac's own gaps: one
+    // test session on 1 Oct 2025, regular use from 28 Apr 2026, and 37 idle days before 3 Jul 2026.
+    func day(_ date: String, _ provider: String = "gpt") -> UsageRow {
+      UsageRow(date: date, provider: provider, model: "gpt-5.5", source: "test", input: 1)
+    }
+    let history = ["2025-10-01", "2026-04-28", "2026-05-18", "2026-05-26", "2026-07-03"].map { day($0) }
+    precondition(
+      restarts(history) == [Restart(day: "2026-04-28", idle: 208), Restart(day: "2026-07-03", idle: 37)])
+    precondition(restarts(history, minIdle: 38) == [Restart(day: "2026-04-28", idle: 208)])
+    // 30 idle days count, 29 don't. Across the October clock change a day is still a day.
+    precondition(restarts([day("2026-09-30"), day("2026-10-31")]) == [Restart(day: "2026-10-31", idle: 30)])
+    precondition(restarts([day("2026-10-01"), day("2026-10-31")]).isEmpty)
+    // Two providers on one day and an unsorted history give the same days.
+    precondition(restarts([day("2026-07-03"), day("2026-04-28", "claude"), day("2026-04-28")]).map(\.day) == ["2026-07-03"])
+    precondition(restarts([]).isEmpty && restarts([day("2026-11-06")]).isEmpty)
+    precondition(counted(history, from: "2026-04-28").map(\.date) == Array(history.map(\.date).dropFirst()))
+    precondition(counted(history, from: nil).count == 5 && counted(history, from: "2026-12-01").isEmpty)
+    print("PASS: Count from days after 30 idle days, days left out before it")
   }
 }

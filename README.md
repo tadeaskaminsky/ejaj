@@ -35,7 +35,7 @@ EJAJ has no Dock icon. It lives in the menu bar as a small waveform.
 
 - **Click** it for the quick view: today's cost, tokens per tool and a verdict comparing today with the same weekday over the past 12 weeks. The quick view is in Slovak, on purpose. In euros, a small line under the amount gives the same cost in dollars and the ECB rate used, so you can hold it against a USD price list or another tool.
 - **Right-click** it for a line with today's cost (with dollars in brackets when you count in euros) and tokens, then Open EJAJ, Refresh data, Archive to GitHub, Launch at login and Quit.
-- **Dashboard** in the quick view (or `⌘O`) opens the main window.
+- **Dashboard** in the quick view (or `⌘O`) opens the main window. It fills the screen between the menu bar and the Dock, on the display whose menu bar you clicked, and the content stretches to the full width. A double-click on the title bar shrinks it to the size it had last time (1000 x 760 at first), and another one fills the screen again. Each time you open it, it fills the screen.
 
 The data refreshes every 30 seconds. The first scan of a long history can take a few seconds, and after that only changed files are read again.
 
@@ -66,6 +66,7 @@ The gear icon in the dashboard has the settings.
 
 - **Currency**: EUR (default, converted at the daily ECB rate) or USD.
 - **Appearance**: Dark, Light or System.
+- **Count from**: leaves out everything before the day you pick. Next to the first record it offers every day you came back after 30 or more days without use, so a lone test session months before you started for real doesn't stretch All time. The totals, the chart, the calendar and the quick view's comparison all start on that day, and with All time selected the dashboard says so under the pickers.
 - **Launch at login**: registers EJAJ as a login item. It shows up in System Settings under General > Login Items.
 - **Edit prices (pricing.json)**: opens `~/Library/Application Support/EJAJ/pricing.json`, creating it with the bundled prices the first time.
 
@@ -130,7 +131,8 @@ EJAJ reads only the token counts, model names, timestamps and the fields that ch
 
 ```
 Sources/        main.swift (app, menus, icon), Models.swift (collector, pricing, averages), Views.swift (SwiftUI)
-Tests/          Tests.swift, a plain executable of preconditions
+Tests/          Tests.swift (collector, prices, calendar math) and WindowTests.swift (needs SwiftUI and a
+                window server), plain executables of preconditions
 Vendor/zstd/    static libzstd 1.5.7 (BSD licence in Vendor/zstd/LICENSE)
 Resources/      Info.plist and AppIcon.icns
 scripts/        build.sh, package.sh, render-calendar.sh

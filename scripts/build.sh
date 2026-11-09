@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Usage: scripts/build.sh
-# Builds build/EJAJ and build/collector-tests, then runs the tests.
+# Builds build/EJAJ, build/collector-tests and build/window-tests, then runs both tests.
 # Prints compiler errors (warnings are filtered) and stops at the first failing step.
 set -u
 cd "$(dirname "$0")/.."
@@ -17,4 +17,9 @@ compile Sources/main.swift Sources/Models.swift Sources/Views.swift Vendor/zstd/
 compile Sources/Models.swift Tests/Tests.swift Vendor/zstd/libzstd.a -o build/collector-tests \
   || { echo "BUILD FAILED: build/collector-tests"; exit 1 }
 build/collector-tests || { echo "TESTS FAILED"; exit 1 }
+compile Sources/Models.swift Sources/Views.swift Tests/WindowTests.swift Vendor/zstd/libzstd.a -o build/window-tests \
+  || { echo "BUILD FAILED: build/window-tests"; exit 1 }
+out=$(build/window-tests 2>&1); rc=$?
+print -r -- "$out" | grep -v "^Charts:"
+(( rc == 0 )) || { echo "TESTS FAILED: build/window-tests"; exit 1 }
 echo "built build/EJAJ"

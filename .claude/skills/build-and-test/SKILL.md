@@ -9,7 +9,7 @@ description: Build EJAJ and run its collector tests after any change to Sources/
 scripts/build.sh
 ```
 
-This compiles `build/EJAJ` and `build/collector-tests` with `swiftc -O` for arm64 macOS 13+, then runs the tests. It prints compiler errors only (warnings are filtered) and ends with `built build/EJAJ`. Anything else is a failure: `BUILD FAILED: ...` or `TESTS FAILED`.
+This compiles `build/EJAJ`, `build/collector-tests` and `build/window-tests` with `swiftc -O` for arm64 macOS 13+, then runs both tests. `window-tests` (from `Tests/WindowTests.swift`) puts the real dashboard into a window, so it needs a logged-in session with a window server and fails over SSH. It prints compiler errors only (warnings are filtered) and ends with `built build/EJAJ`. Anything else is a failure: `BUILD FAILED: ...` or `TESTS FAILED`.
 
 There is no Xcode project and no Swift package. The app is three files in `Sources/` plus the static libzstd in `Vendor/zstd/`, linked through `EJAJ-Bridging.h`. Add new Swift files to the `compile` lines in `scripts/build.sh`, and to `scripts/render-calendar.sh` if the calendar code needs them.
 

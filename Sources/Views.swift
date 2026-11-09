@@ -146,22 +146,32 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
     }
   }
   var rows: [UsageRow] { filtered(days: days, provider: provider) }
+  // Count from in the gear menu: days before it are left out everywhere. nil counts every record.
+  // A hand-edited value that isn't a real yyyy-MM-dd day would hide every row, so it counts as unset.
+  @Published var countFrom = UserDefaults.standard.string(forKey: "countFrom").flatMap {
+    dayFormatter.date(from: $0).map(dayFormatter.string) == $0 ? $0 : nil
+  } {
+    didSet { UserDefaults.standard.set(countFrom, forKey: "countFrom"); onChange?() }
+  }
+  var countedRows: [UsageRow] { counted(dataset?.rows ?? [], from: countFrom) }
   func filtered(days: Int, provider: String = "all") -> [UsageRow] {
     var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "Europe/Bratislava")!
     let start = dayFormatter.string(from: cal.date(byAdding: .day, value: 1 - days, to: Date())!);
     let end = dayFormatter.string(from: Date())
-    return (dataset?.rows ?? []).filter {
+    return countedRows.filter {
       (days == 0 || $0.date >= start) && $0.date <= end && (provider == "all" || $0.provider == provider)
     }
   }
   func hourlyRows(on date: String, provider: String = "all") -> [UsageRow] {
-    (dataset?.hourly ?? []).filter { $0.date == date && (provider == "all" || $0.provider == provider) }
+    counted(dataset?.hourly ?? [], from: countFrom).filter {
+      $0.date == date && (provider == "all" || $0.provider == provider)
+    }
   }
   func hourlyToday(provider: String = "all") -> [UsageRow] {
     hourlyRows(on: dayFormatter.string(from: Date()), provider: provider)
   }
   func allRows(provider: String = "all") -> [UsageRow] {
-    (dataset?.rows ?? []).filter { provider == "all" || $0.provider == provider }
+    countedRows.filter { provider == "all" || $0.provider == provider }
   }
   func total(_ rows: [UsageRow]) -> Int { rows.reduce(0) { $0 + $1.tokens } }
   func cost(_ rows: [UsageRow]) -> Double { rows.reduce(0) { $0 + ($1.cost ?? 0) } }
@@ -652,7 +662,7 @@ struct QuickView: View {
           }
         }
       }
-      let v = dayVerdict(store.dataset?.rows ?? []);
+      let v = dayVerdict(store.countedRows);
       HStack(spacing: 9) {
         Image(systemName: v.icon); Text(v.text).lineLimit(2).fixedSize(horizontal: false, vertical: true)
       }.font(.system(size: 12, weight: .semibold)).foregroundStyle(v.color).padding(.horizontal, 12).padding(
@@ -713,6 +723,11 @@ func unpricedNote(_ rows: [UsageRow]) -> String? {
 struct Dashboard: View {
   @ObservedObject var store: UsageStore
   @ViewState var costMode = false
+  private static let readableDay: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  static func readable(_ day: String) -> String { dayFormatter.date(from: day).map(readableDay.string) ?? day }
   var body: some View {
     let rows = store.rows; let both = store.provider == "all"
     ScrollView {
@@ -743,12 +758,25 @@ struct Dashboard: View {
             Picker("Appearance", selection: $store.theme) {
               Text("Dark").tag("dark"); Text("Light").tag("light"); Text("System").tag("system")
             }.pickerStyle(.inline)
+            let all = store.dataset?.rows ?? [], starts = restarts(all)
+            if !starts.isEmpty || store.countFrom != nil {
+              Picker("Count from", selection: $store.countFrom) {
+                Text("First record" + (all.map(\.date).min().map { ", " + Dashboard.readable($0) } ?? ""))
+                  .tag(String?.none)
+                ForEach(starts, id: \.day) { s in
+                  Text("\(Dashboard.readable(s.day)), after \(s.idle) idle days").tag(String?.some(s.day))
+                }
+                if let from = store.countFrom, !starts.contains(where: { $0.day == from }) {
+                  Text(Dashboard.readable(from)).tag(String?.some(from))
+                }
+              }.pickerStyle(.inline)
+            }
             Toggle("Launch at login", isOn: $store.launchAtLogin)
             Divider()
             Button("Edit prices (pricing.json)…") { store.editPricing() }
           } label: {
             Image(systemName: "gearshape")
-          }.menuStyle(.borderlessButton).fixedSize().help("Currency, appearance, login item, prices")
+          }.menuStyle(.borderlessButton).fixedSize().help("Currency, appearance, Count from, login item, prices")
           Button {
             store.archive()
           } label: {
@@ -759,6 +787,10 @@ struct Dashboard: View {
         if let r = store.archiveResult {
           Text(r.text).font(.system(size: 11)).foregroundStyle(r.failed ? orange : muted).lineLimit(2).textSelection(
             .enabled)
+        }
+        if store.days == 0, let from = store.countFrom {
+          Text("All time starts on \(Dashboard.readable(from)), as Count from in the gear menu says.")
+            .font(.system(size: 11)).foregroundStyle(muted)
         }
         // swiftc -D CALENDAR_ONLY builds a debug binary that shows the calendar at the top, for screenshots.
         #if !CALENDAR_ONLY
@@ -808,7 +840,9 @@ struct Dashboard: View {
         #endif
         CalendarPanel(store: store, costMode: costMode)
         ModelPanel(store: store)
-      }.padding(28).frame(maxWidth: 1200)
+      // No width cap: NSHostingView turns the content's maximum size into the window's, and a 1200 cap
+      // stopped a title-bar double-click from filling the screen.
+      }.padding(28).frame(maxWidth: .infinity)
     }.background(canvas)
       .foregroundStyle(ink).preferredColorScheme(store.colorScheme).frame(minWidth: 880, minHeight: 560)
   }

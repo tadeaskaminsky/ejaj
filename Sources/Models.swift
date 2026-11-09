@@ -262,6 +262,24 @@ let dayFormatter: DateFormatter = {
   f.timeZone = TimeZone(identifier: "Europe/Bratislava"); return f
 }()
 
+// Days the history can be counted from, besides the first record: each day of use that follows at least
+// `minIdle` days without any. Count from in the gear menu offers them, so a lone test session months before
+// regular use doesn't stretch All time.
+struct Restart: Equatable { var day: String; var idle: Int }
+func restarts(_ rows: [UsageRow], minIdle: Int = 30) -> [Restart] {
+  let days = Set(rows.map(\.date)).sorted()
+  return zip(days, days.dropFirst()).compactMap { before, day in
+    guard let a = dayFormatter.date(from: before), let b = dayFormatter.date(from: day),
+      let gap = bratislava.dateComponents([.day], from: a, to: b).day, gap - 1 >= minIdle
+    else { return nil }
+    return Restart(day: day, idle: gap - 1)
+  }
+}
+// The rows from `day` on. nil keeps them all.
+func counted(_ rows: [UsageRow], from day: String?) -> [UsageRow] {
+  guard let day else { return rows }; return rows.filter { $0.date >= day }
+}
+
 // A calendar day's API cost against the same weekday in the 12 weeks before it. When that weekday has no
 // history yet, the 30 days before it are used. Days without any cost are left out of the average.
 struct DayAverage {
