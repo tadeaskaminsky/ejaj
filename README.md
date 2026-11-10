@@ -88,7 +88,7 @@ Prices are in USD per million tokens, in this order: input, cache read, cache wr
 
 Some requests cost more than the list price, and EJAJ prices each request on its own:
 
-- **Fast mode.** Claude Code writes `"speed": "fast"` on the response. Codex writes `"service_tier": "priority"` (EJAJ takes `"fast"` too) in a settings snapshot before each turn, except before the first turn in builds older than 0.163. So a Codex log starts in the tier of its first snapshot, and a subagent without one runs in its parent's tier at the time it was spawned. Opus 5.5, Opus 5 and Opus 4.8 cost 2x. GPT-6 and GPT-5.6 cost 2x, gpt-5.5 2.5x.
+- **Fast mode.** Claude Code writes `"speed": "fast"` on the response. Codex writes `"service_tier": "priority"` (EJAJ takes `"fast"` too) in a settings snapshot before each turn, except before the first turn in builds older than 0.163. So a Codex log starts in the tier of its first snapshot, and a subagent without one runs in its parent's tier at the time it was spawned. Fable 5.2, Opus 5.5, Opus 5 and Opus 4.8 cost 2x. GPT-6 and GPT-5.6 cost 2x, gpt-5.5 2.5x.
 - **Long prompts.** Haiku 5.5 costs 5x once a prompt passes 100,000 tokens, cache reads and writes included. OpenAI charges 2x input and 1.5x output past 272,000.
 - **US-only inference.** `"inference_geo": "us"` costs 1.1x on every Claude rate.
 - **Web search.** $10 per 1,000 searches, on top of the tokens.

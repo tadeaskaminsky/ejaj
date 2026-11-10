@@ -11,7 +11,7 @@ import Foundation
     precondition(currencyAmount(fx.convert(115.39, currency: "EUR"), "EUR") == "€100.00")
     print("PASS: exact token formatting, ECB rate parsing, conversion direction, invalid rates")
     for (id, name) in [
-      ("claude-opus-5-5", "Opus 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("claude-opus-5", "Opus 5"),
+      ("claude-opus-5-5", "Opus 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("claude-fable-5-2", "Fable 5.2"), ("claude-opus-5", "Opus 5"),
       ("claude-opus-4-8", "Opus 4.8"), ("claude-haiku-5-5", "Haiku 5.5"), ("gpt-5.6-sol", "GPT-5.6 Sol"),
       ("gpt-6-astra", "GPT-6 Astra"), ("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"), ("gpt-5.5", "GPT-5.5"),
       ("gpt-5-codex", "GPT-5 Codex"), ("codex-auto-review", "Codex Auto Review"), ("unknown", "Unknown model"),
@@ -225,6 +225,14 @@ import Foundation
     // Sonnet 5.5 cache reads are 0.05x input. A model without a fast price keeps its list price.
     precondition(near(row("claude-sonnet-5-5", nil).costParts?.read, 0.1))
     precondition(row("claude-fable-5-1", "fast").cost == row("claude-fable-5-1", nil).cost)
+    // Fable 5.2: $8 input, $0.20 cache read, $10 and $16 writes, $40 output; fast mode doubles all of it.
+    precondition(near(row("claude-fable-5-2", nil).cost, 74.2) && near(row("claude-fable-5-2", "fast").cost, 148.4))
+    precondition(near(row("claude-fable-5-2", "fast+us").cost, 148.4 * 1.1))
+    let fable = row("claude-fable-5-2", nil).costParts
+    precondition(near(fable?.input, 8) && near(fable?.read, 0.2) && near(fable?.write, 26) && near(fable?.output, 40))
+    var fable5m = row("claude-fable-5-2", nil)
+    fable5m.write1h = 0
+    precondition(near(fable5m.costParts?.write, 10))
     // OpenAI long context: 2x input-side, 1.5x output. gpt-5.5 fast is 2.5x.
     let longRow = row("gpt-6.1-sol", "long", provider: "gpt")
     precondition(near(longRow.costParts?.input, 4) && near(longRow.costParts?.output, 15))

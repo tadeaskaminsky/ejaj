@@ -61,7 +61,8 @@ struct LongContext: Equatable { var above: Int; var input: Double; var output: D
 // Fast mode multiplies every rate of the model by `fast`.
 struct Modifiers: Equatable { var fast: Double = 1; var long: LongContext? = nil }
 enum Pricing {
-  // Standard API prices, checked against Anthropic's and OpenAI's pricing pages on 2026-11-05. gpt-5.3-codex-spark
+  // Standard API prices, checked against Anthropic's and OpenAI's pricing pages on 2026-11-05
+  // (Fable 5.2 on 2026-11-10). gpt-5.3-codex-spark
   // and gpt-5-codex are not on OpenAI's page; their rates come from third-party price lists. For OpenAI models the
   // fifth rate is unused: Codex logs report one kind of cache write.
   static let bundled: [String: [Double]] = [
@@ -69,6 +70,7 @@ enum Pricing {
     "gpt-5.6-luna": [0.2, 0.02, 0.25, 1.2, 0.4], "claude-opus-5": [5, 0.5, 6.25, 25, 10],
     "claude-opus-4-8": [5, 0.5, 6.25, 25, 10], "claude-sonnet-5": [2, 0.2, 2.5, 10, 4],
     "claude-fable-5": [10, 1, 12.5, 50, 20], "claude-fable-5-1": [10, 0.25, 12.5, 50, 20],
+    "claude-fable-5-2": [8, 0.2, 10, 40, 16],
     "claude-opus-5-5": [4, 0.2, 5, 20, 8], "claude-sonnet-5-5": [2, 0.1, 2.5, 10, 4],
     "claude-haiku-5-5": [0.1, 0.01, 0.125, 0.5, 0.2], "gpt-6-sol": [2, 0.2, 2.5, 10, 4],
     "gpt-6.1-sol": [2, 0.1, 2.5, 10, 4], "gpt-6.1-terra": [1, 0.05, 1.25, 5, 2],
@@ -76,12 +78,13 @@ enum Pricing {
     "gpt-5.5": [5, 0.5, 6.25, 30, 10], "gpt-5.3-codex-spark": [1.75, 0.175, 2.1875, 14, 3.5],
     "gpt-5-codex": [1.25, 0.125, 1.5625, 10, 2.5], "codex-auto-review": [0, 0, 0, 0, 0],
   ]
-  // Fast mode: Opus 5.5 $8/$40, Opus 5 and 4.8 $10/$50; OpenAI's fast tier (priority in Codex logs) doubles the
+  // Fast mode: Fable 5.2 $16/$80, Opus 5.5 $8/$40, Opus 5 and 4.8 $10/$50; OpenAI's fast tier (priority in Codex logs) doubles the
   // GPT-6 and GPT-5.6 rates and charges 2.5x on gpt-5.5. Haiku 5.5 costs 5x for prompts over 100K tokens, and OpenAI
   // charges 2x input and 1.5x output for prompts over 272K.
   static let bundledModifiers: [String: Modifiers] = {
     let openAILong = LongContext(above: 272_000, input: 2, output: 1.5)
     var m: [String: Modifiers] = [
+      "claude-fable-5-2": Modifiers(fast: 2),
       "claude-opus-5-5": Modifiers(fast: 2), "claude-opus-5": Modifiers(fast: 2), "claude-opus-4-8": Modifiers(fast: 2),
       "claude-haiku-5-5": Modifiers(long: LongContext(above: 100_000, input: 5, output: 5)),
       "gpt-5.5": Modifiers(fast: 2.5, long: openAILong),

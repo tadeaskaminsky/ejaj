@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.10.1 (2026-11-10)
+
+- Claude Fable 5.2 has a price, so its requests count in the API cost. Before, they showed tokens but no cost. It costs $8 per million input tokens, $40 output, $0.20 for cache reads and $10 or $16 for 5-minute or 1-hour cache writes. Fast mode doubles all of it ($16 / $80), and US-only inference adds 1.1x on top as for the other Claude models. On this Mac that is 72 requests on 9 November, about $16.56.
+- Checked: prices against Anthropic's pricing page on 10 November. Tests for each price category, fast mode and fast plus US-only, and the name "Fable 5.2". Swapping the two cache-write prices fails the tests. A snapshot of the real logs with the 72 requests. A separate review with correctness, tests and silent-failure passes. Its one finding was that the first test only checked the total, so it couldn't catch prices in the wrong order. That is now fixed. The running app's Models table was not opened.
+
 ## 1.10.0 (2026-11-06)
 
 - The calendar has a **Claude week** banner above the grid: how much of the Claude plan's weekly limit is left, when it resets and where the week is heading at its pace so far. Red means the pace hits the limit before the reset, with roughly when. Orange means a good part of the limit would go unused. The per-model weekly limits and the 5-hour limit are on the right. It reads the same numbers as `/usage` in Claude Code, every 5 minutes, and a click reads them again.
