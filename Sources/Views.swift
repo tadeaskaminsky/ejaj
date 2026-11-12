@@ -193,6 +193,13 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
   func hourlyToday(provider: String = "all") -> [UsageRow] {
     hourlyRows(on: dayFormatter.string(from: Date()), provider: provider)
   }
+  // The sessions' usage in the chosen range and platform, after Count from. nil before the first scan that read them.
+  func sessionTotals() -> [SessionTotal]? {
+    guard let sessions = dataset?.sessions else { return nil }
+    let today = dayFormatter.string(from: Date())
+    let start = days == 0 ? nil : dayFormatter.string(from: bratislava.date(byAdding: .day, value: 1 - days, to: Date())!)
+    return totalsBySession(sessions, from: [start, countFrom].compactMap { $0 }.max(), through: today, provider: provider)
+  }
   func allRows(provider: String = "all") -> [UsageRow] {
     countedRows.filter { provider == "all" || $0.provider == provider }
   }
@@ -835,6 +842,7 @@ func unpricedNote(_ rows: [UsageRow]) -> String? {
 struct Dashboard: View {
   @ObservedObject var store: UsageStore
   @ViewState var costMode = false
+  @ViewState var tab = UserDefaults.standard.string(forKey: "tab") == "analytics" ? "analytics" : "overview"
   private static let readableDay: DateFormatter = {
     let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; f.locale = Locale(identifier: "en_US")
     f.timeZone = dayFormatter.timeZone; return f
@@ -844,6 +852,10 @@ struct Dashboard: View {
     let rows = store.rows; let both = store.provider == "all"
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
+        Picker("View", selection: $tab) {
+          Text("Overview").tag("overview"); Text("Analytics").tag("analytics")
+        }.pickerStyle(.segmented).labelsHidden().frame(width: 220)
+          .onChange(of: tab) { UserDefaults.standard.set($0, forKey: "tab") }
         HStack(spacing: 12) {
           Picker("Platform", selection: $store.provider) {
             Text("All").tag("all"); Text("Claude").tag("claude"); Text("Codex").tag("gpt")
@@ -904,6 +916,18 @@ struct Dashboard: View {
           Text("All time starts on \(Dashboard.readable(from)), as Count from in the gear menu says.")
             .font(.system(size: 11)).foregroundStyle(muted)
         }
+        if tab == "analytics" {
+          AnalyticsView(store: store)
+        } else {
+          overview(rows: rows, both: both)
+        }
+      // No width cap: NSHostingView turns the content's maximum size into the window's, and a 1200 cap
+      // stopped a title-bar double-click from filling the screen.
+      }.padding(28).frame(maxWidth: .infinity)
+    }.background(canvas)
+      .foregroundStyle(ink).preferredColorScheme(store.colorScheme).frame(minWidth: 880, minHeight: 560)
+  }
+  @ViewBuilder private func overview(rows: [UsageRow], both: Bool) -> some View {
         // swiftc -D CALENDAR_ONLY builds a debug binary that shows the calendar at the top, for screenshots.
         #if !CALENDAR_ONLY
           let split = breakdown(rows), cost = store.cost(rows)
@@ -952,11 +976,6 @@ struct Dashboard: View {
         #endif
         CalendarPanel(store: store, costMode: costMode)
         ModelPanel(store: store)
-      // No width cap: NSHostingView turns the content's maximum size into the window's, and a 1200 cap
-      // stopped a title-bar double-click from filling the screen.
-      }.padding(28).frame(maxWidth: .infinity)
-    }.background(canvas)
-      .foregroundStyle(ink).preferredColorScheme(store.colorScheme).frame(minWidth: 880, minHeight: 560)
   }
 }
 // One line per model over the selected range. Costs are summed per day so dated prices apply correctly.
@@ -969,10 +988,12 @@ struct ModelTotal: Identifiable {
 }
 struct ModelPanel: View {
   @ObservedObject var store: UsageStore
+  // The rows to sum; nil uses the dashboard's range and platform.
+  var rows: [UsageRow]? = nil
   @ViewState var sort = "tokens"; @ViewState var ascending = false
   var models: [ModelTotal] {
     var m: [String: ModelTotal] = [:]
-    for r in store.rows {
+    for r in rows ?? store.rows {
       var x = m[r.provider + "|" + r.model] ?? ModelTotal(provider: r.provider, model: r.model)
       x.tokens += r.tokens; x.prompt += r.input + r.cached + r.write + r.write1h; x.cached += r.cached;
       x.requests += r.requests
@@ -1040,5 +1061,258 @@ struct ModelPanel: View {
         if list.isEmpty { Text("No data").font(.system(size: 12)).foregroundStyle(muted) }
       }.frame(maxWidth: .infinity, alignment: .leading)
     }
+  }
+}
+// The Analytics tab: what each project cost in the chosen range and platform, then the sessions of one project,
+// then one session. Projects come from the session's working folder (see projectOf).
+struct AnalyticsView: View {
+  @ObservedObject var store: UsageStore
+  @ViewState private var project: String?
+  @ViewState private var session: String?
+  @ViewState private var sort = "cost"
+  @ViewState private var ascending = false
+  @ViewState private var hovered: String?
+  init(store: UsageStore, project: String? = nil, session: String? = nil) {
+    self.store = store; _project = ViewState(initialValue: project); _session = ViewState(initialValue: session)
+  }
+  private static let startFormatter: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "d MMM HH:mm"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  private static let longFormatter: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "EEE d MMM, HH:mm"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  private var rangeText: String {
+    switch store.days {
+    case 1: return "today"
+    case 0: return "all time"
+    default: return "last \(store.days) days"
+    }
+  }
+  private func sessionCount(_ n: Int) -> String { "\(n) \(n == 1 ? "session" : "sessions")" }
+  static func title(_ s: SessionUsage) -> String { s.title ?? "Untitled · " + String(s.session.prefix(8)) }
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      if let totals = store.sessionTotals() {
+        let projects = totalsByProject(totals)
+        if let p = projects.first(where: { $0.name == project }) {
+          if let s = p.sessions.first(where: { $0.id == session }) {
+            sessionDetail(p, s)
+          } else {
+            projectDetail(p)
+          }
+        } else {
+          projectList(projects)
+        }
+      } else {
+        Panel {
+          Text(store.busy ? "Reading sessions…" : "No session data yet. Refresh to read the sessions.")
+            .font(.system(size: 12)).foregroundStyle(muted).frame(maxWidth: .infinity).frame(height: 120)
+        }
+      }
+    }
+  }
+  private var unpricedFootnote: some View {
+    Text("* excludes tokens of unpriced models").font(.system(size: 10)).foregroundStyle(muted).padding(.top, 4)
+  }
+  // Back links above a project or a session.
+  private func breadcrumb(_ p: ProjectTotal?, _ s: SessionTotal?) -> some View {
+    HStack(spacing: 6) {
+      Button {
+        project = nil; session = nil
+      } label: {
+        HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("Projects") }
+      }.buttonStyle(.plain).foregroundStyle(p == nil ? ink : muted)
+      if let p {
+        Text("/").foregroundStyle(muted.opacity(0.6))
+        Button {
+          session = nil
+        } label: {
+          Text(p.name)
+        }.buttonStyle(.plain).foregroundStyle(s == nil ? ink : muted).disabled(s == nil)
+      }
+      if let s {
+        Text("/").foregroundStyle(muted.opacity(0.6))
+        Text(AnalyticsView.title(s.session)).lineLimit(1)
+      }
+    }.font(.system(size: 12, weight: .medium))
+  }
+  // Light bar under the name's length scale: the share of the largest figure in the list.
+  private func bar(_ ratio: Double) -> some View {
+    GeometryReader { g in
+      Capsule().fill(ink.opacity(0.85)).frame(width: max(4, g.size.width * min(1, max(0, ratio))), height: 6)
+        .frame(maxHeight: .infinity)
+    }.frame(height: 14)
+  }
+  private func row<Content: View>(_ id: String, action: @escaping () -> Void, @ViewBuilder content: () -> Content)
+    -> some View
+  {
+    Button(action: action) {
+      content().padding(.horizontal, 10).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovered == id ? ink.opacity(0.05) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+    }.buttonStyle(.plain).onHover { inside in hovered = inside ? id : (hovered == id ? nil : hovered) }
+  }
+  @ViewBuilder private func projectList(_ projects: [ProjectTotal]) -> some View {
+    let maxCost = projects.map(\.cost).max() ?? 0
+    let total = projects.reduce(0) { $0 + $1.cost }
+    Panel {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 8) {
+          Image(systemName: "folder").foregroundStyle(muted)
+          Text("Projects").font(.system(size: 14, weight: .semibold))
+          Spacer()
+          Text(
+            "\(projects.count) \(projects.count == 1 ? "project" : "projects") · "
+              + sessionCount(projects.reduce(0) { $0 + $1.sessions.count }) + " · " + store.money(total)
+              + (projects.contains(where: \.unpriced) ? "*" : "") + " · "
+              + rangeText
+          ).font(.system(size: 11).monospacedDigit()).foregroundStyle(muted)
+        }.padding(.bottom, 6)
+        if projects.isEmpty {
+          Text("No sessions in this range").font(.system(size: 12)).foregroundStyle(muted)
+            .frame(maxWidth: .infinity).frame(height: 80)
+        }
+        ForEach(projects) { p in
+          row(p.id, action: { project = p.name; session = nil }) {
+            HStack(spacing: 16) {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(p.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(sessionCount(p.sessions.count) + " · " + compact(p.tokens) + " tokens")
+                  .font(.system(size: 11).monospacedDigit()).foregroundStyle(muted).lineLimit(1)
+              }.frame(width: 230, alignment: .leading)
+              bar(maxCost > 0 ? p.cost / maxCost : 0)
+              Text(store.money(p.cost) + (p.unpriced ? "*" : "")).font(.system(size: 13, weight: .medium).monospacedDigit())
+                .foregroundStyle(muted).frame(width: 100, alignment: .trailing)
+              Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
+            }
+          }.help(p.folders.isEmpty ? p.name : p.folders.joined(separator: "\n"))
+        }
+        if projects.contains(where: \.unpriced) { unpricedFootnote }
+      }
+    }
+  }
+  private func sorted(_ list: [SessionTotal]) -> [SessionTotal] {
+    list.sorted { a, b in
+      switch sort {
+      case "session":
+        let c = AnalyticsView.title(a.session).localizedStandardCompare(AnalyticsView.title(b.session))
+        return c == .orderedSame ? a.cost > b.cost : (c == (ascending ? .orderedAscending : .orderedDescending))
+      case "started":
+        return ascending ? a.session.start < b.session.start : a.session.start > b.session.start
+      case "tokens": return ascending ? a.tokens < b.tokens : a.tokens > b.tokens
+      default: return a.cost == b.cost ? a.tokens > b.tokens : (ascending ? a.cost < b.cost : a.cost > b.cost)
+      }
+    }
+  }
+  private func header(_ title: String, _ key: String) -> some View {
+    Button {
+      if sort == key { ascending.toggle() } else { sort = key; ascending = key == "session" }
+    } label: {
+      HStack(spacing: 3) {
+        Text(title)
+        if sort == key {
+          Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+        }
+      }.foregroundStyle(sort == key ? ink : muted).contentShape(Rectangle())
+    }.buttonStyle(.plain)
+  }
+  private func providerParts(_ sessions: [SessionTotal]) -> [(String, String)] {
+    let providers = Set(sessions.map(\.session.provider))
+    guard providers.count > 1 else { return [] }
+    return ["claude", "gpt"].map { p in
+      (p, store.money(sessions.filter { $0.session.provider == p }.reduce(0) { $0 + $1.cost }))
+    }
+  }
+  @ViewBuilder private func projectDetail(_ p: ProjectTotal) -> some View {
+    let rows = p.sessions.flatMap(\.rows), split = breakdown(rows)
+    let list = sorted(p.sessions), maxCost = p.sessions.map(\.cost).max() ?? 0
+    breadcrumb(p, nil)
+    HStack(spacing: 16) {
+      Total(
+        title: "API cost · " + rangeText, value: store.money(p.cost), subtitle: store.usdLine(p.cost),
+        parts: providerParts(p.sessions), note: unpricedNote(rows), details: costDetails(split, store.money))
+      Total(
+        title: "Tokens", value: exact(p.tokens),
+        parts: Set(p.sessions.map(\.session.provider)).count > 1
+          ? ["claude", "gpt"].map { pr in
+            (pr, exact(p.sessions.filter { $0.session.provider == pr }.reduce(0) { $0 + $1.tokens }))
+          } : [],
+        details: tokenDetails(split))
+      Total(
+        title: "Sessions", value: exact(p.sessions.count), parts: [],
+        details: [
+          ("Requests", exact(p.sessions.reduce(0) { $0 + $1.requests })),
+          ("Average session", store.money(p.cost / Double(max(1, p.sessions.count)))),
+          ("Last activity", AnalyticsView.startFormatter.string(from: p.last)),
+        ] + p.folders.prefix(3).map { ("Folder", $0) })
+    }.fixedSize(horizontal: false, vertical: true)
+    Panel {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Sessions").font(.system(size: 14, weight: .semibold)).padding(.bottom, 4)
+        HStack(spacing: 12) {
+          header("Session", "session").frame(maxWidth: .infinity, alignment: .leading)
+          header("Started", "started").frame(width: 100, alignment: .leading)
+          Text("Length").foregroundStyle(muted).frame(width: 80, alignment: .trailing)
+          header("Tokens", "tokens").frame(width: 110, alignment: .trailing)
+          Color.clear.frame(width: 90)
+          header("API cost", "cost").frame(width: 90, alignment: .trailing)
+          Color.clear.frame(width: 8)
+        }.font(.system(size: 10, weight: .medium)).padding(.horizontal, 10)
+        ForEach(list) { s in
+          Divider().opacity(0.5)
+          row(s.id, action: { session = s.id }) {
+            HStack(spacing: 12) {
+              HStack(spacing: 8) {
+                Dot(color: providerColor(s.session.provider))
+                Text(AnalyticsView.title(s.session)).foregroundStyle(s.session.title == nil ? muted : ink).lineLimit(1)
+              }.frame(maxWidth: .infinity, alignment: .leading)
+              Text(AnalyticsView.startFormatter.string(from: s.session.start)).foregroundStyle(muted)
+                .frame(width: 100, alignment: .leading)
+              Text(durationText(s.session.end.timeIntervalSince(s.session.start))).foregroundStyle(muted)
+                .frame(width: 80, alignment: .trailing)
+              Text(exact(s.tokens)).frame(width: 110, alignment: .trailing)
+              bar(maxCost > 0 ? s.cost / maxCost : 0).frame(width: 90)
+              Text(store.money(s.cost) + (s.unpriced ? "*" : "")).frame(width: 90, alignment: .trailing)
+              Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(muted)
+                .frame(width: 8)
+            }.font(.system(size: 12).monospacedDigit())
+          }.help(AnalyticsView.title(s.session))
+        }
+        if p.unpriced { unpricedFootnote }
+      }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+  @ViewBuilder private func sessionDetail(_ p: ProjectTotal, _ s: SessionTotal) -> some View {
+    let split = breakdown(s.rows), info = s.session
+    breadcrumb(p, s)
+    VStack(alignment: .leading, spacing: 4) {
+      Text(AnalyticsView.title(info)).font(.system(size: 20, weight: .semibold)).lineLimit(2)
+      HStack(spacing: 8) {
+        Dot(color: providerColor(info.provider))
+        Text(info.provider == "gpt" ? "Codex" : "Claude Code")
+        Text("·"); Text(info.session).textSelection(.enabled)
+      }.font(.system(size: 11).monospacedDigit()).foregroundStyle(muted)
+    }
+    HStack(spacing: 16) {
+      Total(
+        title: "API cost" + (store.days == 0 ? "" : " · " + rangeText), value: store.money(s.cost),
+        subtitle: store.usdLine(s.cost), parts: [], note: unpricedNote(s.rows), details: costDetails(split, store.money))
+      Total(title: "Tokens", value: exact(s.tokens), parts: [], details: tokenDetails(split))
+      Total(
+        title: "Session", value: durationText(info.end.timeIntervalSince(info.start)), parts: [],
+        details: [
+          ("Started", AnalyticsView.longFormatter.string(from: info.start)),
+          ("Last request", AnalyticsView.longFormatter.string(from: info.end)),
+          ("Requests", exact(s.requests)),
+          ("Folder", info.folder ?? info.project),
+        ])
+    }.fixedSize(horizontal: false, vertical: true)
+    if store.days != 0, s.rows.count < info.rows.count {
+      Text("Counts only the part of the session in the \(rangeText). All time shows the whole session.")
+        .font(.system(size: 11)).foregroundStyle(muted)
+    }
+    ModelPanel(store: store, rows: s.rows)
   }
 }

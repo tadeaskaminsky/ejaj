@@ -41,7 +41,9 @@ The data refreshes every 30 seconds. The first scan of a long history can take a
 
 ### 3. The dashboard
 
-The two pickers at the top decide what everything below shows. **Platform** is All, Claude or Codex. **Range** is Today, 7, 30 or 90 days, or All time.
+The **Overview** and **Analytics** switch at the very top picks the tab. Overview is everything in this section and the next. Analytics is described in section 5.
+
+The two pickers under it decide what both tabs show. **Platform** is All, Claude or Codex. **Range** is Today, 7, 30 or 90 days, or All time.
 
 Under them you get the token and API cost totals and a chart per day (per hour for Today). The Tokens/Cost switch above the chart picks what the bars measure. If a model has no known price, the API cost card says how many tokens that leaves out.
 
@@ -64,7 +66,17 @@ Click a day to see its totals per tool, its hour-by-hour chart and two banners:
 
 Both banners use the same scale. Way above average is 1.5x or more, Above is over 1.1x, Average is 0.9x to 1.1x, Below is 0.5x to 0.9x, and Way below is anything less. Days and weeks with no cost at all are left out of the averages. The Platform picker applies to the calendar too, so with Claude selected you compare Claude with Claude.
 
-### 5. Settings
+### 5. Analytics
+
+The **Projects** panel lists what each project cost in the chosen range and platform, most expensive first. A bar shows how it compares with the top project. Under each name you see how many sessions it had and how many tokens they used. Hover a row to see the project's folder.
+
+Click a project to see its cost, tokens and sessions, and a table of its sessions with when each started, how long it ran from the first request to the last, its tokens and its cost. Click a column header to sort. Click a session for its own breakdown: cost and tokens per category, start, last request, number of requests, folder and the models it used. The links at the top take you back.
+
+A session is one Claude Code conversation with its subagents, or one Codex thread with the threads it spawned. Its project is the git repository around the folder it last worked in, so a session in a subfolder or in a Claude Code worktree (`.claude/worktrees/…`) counts toward the repository. A folder outside any repository is its own project. Claude's and Codex's scratch folders are grouped as **Scratch**, and temporary folders as **Temporary**. Projects with the same folder name count as one.
+
+Titles are the ones you see in the apps: the name you gave a Claude Code session or else the one it generated, and the Codex thread name. Codex threads without a name show as "Untitled" with the start of their id. With a range other than All time, a session that started earlier counts only its days inside the range, and its page says so. A `*` next to a cost means it leaves out tokens of models without a price.
+
+### 6. Settings
 
 The gear icon in the dashboard has the settings.
 
@@ -109,11 +121,11 @@ These live in the same file. The object form takes `rates` (either form above), 
 
 Edit prices writes all of this out the first time, with every bundled model. From then on the file's values win, so a price a later EJAJ corrects stays as the file has it until you change it there or delete the file. Save the file and the next refresh picks it up. If an entry is broken, the dashboard names the model and that model keeps its bundled price and modifiers. The other entries still apply.
 
-### 6. Archive (optional)
+### 7. Archive (optional)
 
 The Archive button runs `~/projects/token-archive/archive.py`, a separate script that saves a snapshot of the counts and pushes it to a git repository. If that script doesn't exist, the button says so and nothing else happens.
 
-### 7. Updating
+### 8. Updating
 
 Pull and package again. To replace the copy you run and restart it in one step:
 
@@ -129,7 +141,7 @@ scripts/package.sh --install /Applications/EJAJ.app
 - **Claude Code**: `~/.claude/projects/**/*.jsonl`, `~/.config/claude/projects` and `$CLAUDE_CONFIG_DIR/projects` when they exist
 - **Codex**: `~/.codex/sessions` and `~/.codex/archived_sessions` (plus the same folders under `$CODEX_HOME`), `.jsonl` and the compressed `.jsonl.zst` rollouts
 
-EJAJ reads only the token counts, model names, timestamps and the fields that change the price (speed, service tier, inference geo, web search count) from those files, never prompts or tool output. Repeated records are counted once, also across folders, and a folder reached twice through a symlink is read once. The environment variables only count when EJAJ itself sees them, so for the app started from Finder or at login that is usually never. The last result is cached in `~/Library/Application Support/EJAJ/history.json` so the app opens with numbers straight away. Days are Europe/Bratislava days.
+EJAJ reads only the token counts, model names, timestamps and the fields that change the price (speed, service tier, inference geo, web search count) from those files, never prompts or tool output. For the Analytics tab it also reads each request's session id and working folder, the session titles, and Codex thread names from `session_index.jsonl`. It saves the project's name and folder with each session, not the full working path. Repeated records are counted once, also across folders, and a folder reached twice through a symlink is read once. The environment variables only count when EJAJ itself sees them, so for the app started from Finder or at login that is usually never. The last result is cached in `~/Library/Application Support/EJAJ/history.json` so the app opens with numbers straight away. Days are Europe/Bratislava days.
 
 ## Development
 

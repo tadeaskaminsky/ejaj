@@ -656,5 +656,141 @@ import Foundation
       precondition(applyTokenRefresh(stored, response: Data(bad.utf8), now: now) == nil, bad)
     }
     print("PASS: Claude Code credentials, refresh merge keeps other keys")
+    try sessionTests()
+  }
+  static func sessionTests() throws {
+    let home = "/Users/me", repos: Set<String> = ["/Users/me/work/shop", "/Users/me/work/shop/.claude/worktrees/x"]
+    func project(_ cwd: String?) -> ProjectRef { projectOf(cwd: cwd, home: home) { repos.contains($0) } }
+    precondition(project("/Users/me/work/shop") == ProjectRef(name: "shop", folder: "~/work/shop"))
+    precondition(project("/Users/me/work/shop/packages/api/") == ProjectRef(name: "shop", folder: "~/work/shop"))
+    // A worktree is its repository, even though the worktree has its own .git.
+    precondition(project("/Users/me/work/shop/.claude/worktrees/x/src") == ProjectRef(name: "shop", folder: "~/work/shop"))
+    precondition(project("/Users/me/notes/drafts") == ProjectRef(name: "drafts", folder: "~/notes/drafts"))
+    precondition(project("/Users/me") == ProjectRef(name: "Home folder", folder: "~"))
+    precondition(project("/opt/tool") == ProjectRef(name: "tool", folder: "/opt/tool"))
+    precondition(
+      project("/Users/me/Library/Application Support/Claude/scratch-workspaces/a/b/scratch-1").name == "Scratch")
+    precondition(project("/Users/me/Documents/Codex/2026-10-16/spr") == ProjectRef(name: "Scratch", folder: nil))
+    precondition(project("/private/tmp/claude-501/x") == ProjectRef(name: "Temporary", folder: nil))
+    precondition(project("/var/folders/ab/T/x").name == "Temporary" && project("/tmp").name == "Temporary")
+    precondition(project(nil).name == "Unknown folder" && project("relative").name == "Unknown folder")
+    for (seconds, text) in [(20.0, "<1 min"), (45 * 60, "45 min"), (3600, "1 h"), (2 * 3600 + 13 * 60, "2 h 13 min"),
+      (76 * 3600, "3 d 4 h"), (48 * 3600, "2 d"), (-5, "<1 min")] as [(Double, String)]
+    {
+      precondition(durationText(seconds) == text, "\(seconds) → \(durationText(seconds))")
+    }
+    // Ranges, platforms and grouping by name, most expensive first.
+    func row(_ date: String, _ provider: String, _ input: Int) -> UsageRow {
+      UsageRow(
+        date: date, provider: provider, model: provider == "gpt" ? "gpt-5.6-sol" : "claude-opus-5", source: "t",
+        input: input, requests: 1)
+    }
+    let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+    let list = [
+      SessionUsage(
+        provider: "claude", session: "a", project: "shop", folder: "~/work/shop", start: t0, end: t0,
+        rows: [row("2026-11-01", "claude", 1_000_000), row("2026-11-10", "claude", 2_000_000)]),
+      SessionUsage(
+        provider: "gpt", session: "b", project: "shop", folder: "~/old/shop", start: t0, end: t0.addingTimeInterval(60),
+        rows: [row("2026-11-10", "gpt", 1_000_000)]),
+      SessionUsage(
+        provider: "claude", session: "c", project: "blog", folder: "~/blog", start: t0, end: t0,
+        rows: [row("2026-10-01", "claude", 10_000_000)]),
+    ]
+    let all = totalsByProject(totalsBySession(list, from: nil, through: "2026-11-12", provider: "all"))
+    precondition(all.map(\.name) == ["blog", "shop"] && all[0].cost == 50 && all[1].cost == 19)
+    precondition(all[1].folders == ["~/old/shop", "~/work/shop"] && all[1].sessions.map(\.session.session) == ["a", "b"])
+    precondition(all[1].last == t0.addingTimeInterval(60) && all[1].tokens == 4_000_000)
+    let recent = totalsBySession(list, from: "2026-11-05", through: "2026-11-12", provider: "all")
+    precondition(recent.map(\.session.session) == ["a", "b"] && recent[0].cost == 10 && recent[0].requests == 1)
+    let codex = totalsBySession(list, from: nil, through: "2026-11-12", provider: "gpt")
+    precondition(codex.count == 1 && codex[0].cost == 4)
+    precondition(totalsBySession(list, from: nil, through: "2026-10-31", provider: "all").map(\.session.session) == ["c"])
+    // Both ends of the range count: today's rows are on `through`, Count from's day is on `from`.
+    let edges = totalsBySession(list, from: "2026-11-01", through: "2026-11-01", provider: "all")
+    precondition(edges.map(\.session.session) == ["a"] && edges[0].cost == 5)
+    // A model without a price leaves the cost out and marks the session and its project.
+    var unknown = row("2026-11-10", "gpt", 1_000_000); unknown.model = "gpt-unpriced"
+    var mixed = list[1]; mixed.rows.append(unknown)
+    let marked = totalsByProject(totalsBySession([list[0], mixed], from: nil, through: "2026-11-12", provider: "all"))
+    precondition(marked[0].cost == 19 && marked[0].unpriced && marked[0].sessions.filter(\.unpriced).count == 1)
+    precondition(!all.contains(where: \.unpriced))
+    print("PASS: projects from working folders, worktrees, scratch; session totals by range, platform and project")
+
+    // The collector: a Claude session with a subagent file, titles, and a Codex thread with a subagent under it.
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repo = root.appendingPathComponent("code/shop"), sub = repo.appendingPathComponent("api")
+    try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+    let claude = root.appendingPathComponent(".claude/projects/shop"), codexDir = root.appendingPathComponent(".codex")
+    try FileManager.default.createDirectory(
+      at: claude.appendingPathComponent("s1/subagents"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: codexDir.appendingPathComponent("sessions"), withIntermediateDirectories: true)
+    func json(_ o: [String: Any]) -> String { String(data: try! JSONSerialization.data(withJSONObject: o), encoding: .utf8)! }
+    func message(_ id: String, _ ts: String, cwd: String, session: String = "s1") -> String {
+      json([
+        "timestamp": ts, "requestId": "r" + id, "sessionId": session, "cwd": cwd,
+        "message": ["id": id, "model": "claude-opus-5", "usage": ["input_tokens": 1_000_000, "output_tokens": 0]],
+      ])
+    }
+    try [
+      json(["type": "ai-title", "aiTitle": "Generated", "sessionId": "s1"]),
+      message("m1", "2026-11-10T09:00:00Z", cwd: sub.path),
+      json(["type": "custom-title", "customTitle": "Fix checkout", "sessionId": "s1"]),
+      json(["type": "ai-title", "aiTitle": "Generated later", "sessionId": "s1"]),
+    ].joined(separator: "\n").write(to: claude.appendingPathComponent("s1.jsonl"), atomically: true, encoding: .utf8)
+    try message("m2", "2026-11-10T11:30:00Z", cwd: repo.path).write(
+      to: claude.appendingPathComponent("s1/subagents/agent-1.jsonl"), atomically: true, encoding: .utf8)
+    // A session that moved from notes to the repo belongs to the repo, whatever order the file lists the requests in.
+    try [
+      message("m4", "2026-11-10T15:00:00Z", cwd: repo.path, session: "s2"),
+      message("m3", "2026-11-10T14:00:00Z", cwd: root.appendingPathComponent("notes").path, session: "s2"),
+    ].joined(separator: "\n").write(to: claude.appendingPathComponent("s2.jsonl"), atomically: true, encoding: .utf8)
+    func rollout(_ id: String, session: String, parent: String?) -> String {
+      var meta: [String: Any] = ["id": id, "session_id": session, "cwd": root.appendingPathComponent("notes").path]
+      if let parent { meta["parent_thread_id"] = parent }
+      return [
+        json(["type": "session_meta", "timestamp": "2026-11-11T08:00:00Z", "payload": meta]),
+        json(["type": "turn_context", "payload": ["model": "gpt-5.6-sol"]]),
+        json([
+          "timestamp": "2026-11-11T08:05:00Z", "type": "event_msg",
+          "payload": [
+            "type": "token_count",
+            "info": ["total_token_usage": ["input_tokens": 1_000_000], "last_token_usage": ["input_tokens": 1_000_000]],
+          ],
+        ]),
+      ].joined(separator: "\n")
+    }
+    try rollout("t1", session: "t1", parent: nil).write(
+      to: codexDir.appendingPathComponent("sessions/a.jsonl"), atomically: true, encoding: .utf8)
+    try rollout("t2", session: "t1", parent: "t1").write(
+      to: codexDir.appendingPathComponent("sessions/b.jsonl"), atomically: true, encoding: .utf8)
+    try [json(["id": "t1", "thread_name": "Old name"]), "broken", json(["id": "t1", "thread_name": "Notes cleanup"])]
+      .joined(separator: "\n").write(to: codexDir.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
+    let collector = Collector(environment: [:])
+    let data = collector.collect(home: root)
+    let sessions = data.sessions ?? []
+    precondition(sessions.count == 3 && data.skipped == 0, "\(sessions.map(\.id)) skipped \(data.skipped)")
+    let s1 = sessions.first { $0.id == "claude|s1" }!
+    precondition(s1.title == "Fix checkout" && s1.project == "shop" && s1.folder == "~/code/shop")
+    precondition(s1.rows.reduce(0) { $0 + $1.requests } == 2 && s1.end.timeIntervalSince(s1.start) == 9000)
+    precondition(sessions.first { $0.id == "claude|s2" }?.project == "shop")
+    let t1 = sessions.first { $0.id == "gpt|t1" }!
+    precondition(t1.title == "Notes cleanup" && t1.project == "notes" && t1.rows.reduce(0) { $0 + $1.requests } == 2)
+    // Session rows add up to the daily rows.
+    precondition(sessions.flatMap(\.rows).reduce(0) { $0 + $1.tokens } == data.rows.reduce(0) { $0 + $1.tokens })
+    // A rename in the index alone is picked up on the next refresh.
+    try json(["id": "t1", "thread_name": "Renamed"]).write(
+      to: codexDir.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
+    let renamed = collector.collect(home: root).sessions ?? []
+    precondition(renamed.first { $0.id == "gpt|t1" }?.title == "Renamed")
+    // The Claude log didn't change, so its titles come from the collector's cache and must still be there.
+    precondition(renamed.first { $0.id == "claude|s1" }?.title == "Fix checkout" && collector.scans == 2)
+    // Saved and read back. Snapshots without sessions load too (see the legacy snapshot above).
+    let back = try JSONDecoder().decode(Dataset.self, from: try JSONEncoder().encode(data))
+    precondition(back.sessions?.count == 3 && back.sessions?.first { $0.id == "claude|s1" }?.title == "Fix checkout")
+    print("PASS: sessions with subagents, titles, Codex thread names and renames, project folders")
   }
 }

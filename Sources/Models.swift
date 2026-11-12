@@ -52,6 +52,93 @@ struct Dataset: Codable {
   var skipped: Int = 0; var unreadable: Int = 0
   // Per-hour rows for every day, for the calendar and the Today chart. Older snapshots have none.
   var hourly: [UsageRow]? = nil
+  // One entry per agent session, for the Analytics tab. Snapshots before 1.11 have none.
+  var sessions: [SessionUsage]? = nil
+}
+// One agent session: a Claude Code conversation with its subagents, or a Codex thread with the threads it spawned.
+// Its rows are per day, model and tier, like Dataset.rows. Only the session's title and the project's name and folder
+// are kept, never a prompt.
+struct SessionUsage: Codable, Identifiable {
+  var provider: String; var session: String
+  var project: String
+  var folder: String? = nil  // the project's folder, ~ for the home folder; nil for scratch and temporary folders
+  var title: String? = nil
+  var start: Date; var end: Date  // the first and the last request
+  var rows: [UsageRow]
+  var id: String { provider + "|" + session }
+}
+// The project a working folder belongs to: the git repository around it, with a Claude Code worktree counted as the
+// repository it came from. Folders outside a repository are their own project. Claude's and Codex's scratch folders
+// are grouped as Scratch, temporary folders as Temporary.
+struct ProjectRef: Equatable { var name: String; var folder: String? }
+func projectOf(cwd: String?, home: String, isRepo: (String) -> Bool) -> ProjectRef {
+  guard var path = cwd, path.hasPrefix("/") else { return ProjectRef(name: "Unknown folder", folder: nil) }
+  while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+  if path.contains("/Library/Application Support/Claude/scratch-workspaces/") || path.hasPrefix(home + "/Documents/Codex/")
+  {
+    return ProjectRef(name: "Scratch", folder: nil)
+  }
+  let inHome = path == home || path.hasPrefix(home + "/")
+  for tmp in ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]
+  where !inHome && (path == tmp || path.hasPrefix(tmp + "/")) {
+    return ProjectRef(name: "Temporary", folder: nil)
+  }
+  if let r = path.range(of: "/.claude/worktrees/") { path = String(path[..<r.lowerBound]) }
+  var root = path, dir = path
+  while dir != home, dir != "/", !dir.isEmpty {
+    if isRepo(dir) { root = dir; break }
+    dir = (dir as NSString).deletingLastPathComponent
+  }
+  if root == home { return ProjectRef(name: "Home folder", folder: "~") }
+  let folder = root.hasPrefix(home + "/") ? "~" + root.dropFirst(home.count) : root
+  return ProjectRef(name: (root as NSString).lastPathComponent, folder: folder)
+}
+// A session's rows in the chosen days and platform. Sessions without any are left out.
+struct SessionTotal: Identifiable {
+  var session: SessionUsage; var rows: [UsageRow]
+  var cost = 0.0; var tokens = 0; var requests = 0
+  // Some rows are of a model without a price, so the cost leaves them out.
+  var unpriced = false
+  var id: String { session.id }
+}
+func totalsBySession(_ sessions: [SessionUsage], from: String?, through: String, provider: String) -> [SessionTotal] {
+  sessions.compactMap { s -> SessionTotal? in
+    guard provider == "all" || s.provider == provider else { return nil }
+    let rows = s.rows.filter { r in r.date >= (from ?? "") && r.date <= through }
+    guard !rows.isEmpty else { return nil }
+    return SessionTotal(
+      session: s, rows: rows, cost: rows.reduce(0) { $0 + ($1.cost ?? 0) }, tokens: rows.reduce(0) { $0 + $1.tokens },
+      requests: rows.reduce(0) { $0 + $1.requests }, unpriced: rows.contains { $0.cost == nil })
+  }
+}
+// Sessions grouped by project name, most expensive first. Two folders with the same name count as one project.
+struct ProjectTotal: Identifiable {
+  var name: String; var folders: [String] = []; var sessions: [SessionTotal] = []
+  var cost = 0.0; var tokens = 0; var last = Date.distantPast
+  var unpriced: Bool { sessions.contains(where: \.unpriced) }
+  var id: String { name }
+}
+func totalsByProject(_ sessions: [SessionTotal]) -> [ProjectTotal] {
+  var byName: [String: ProjectTotal] = [:]
+  for s in sessions {
+    var p = byName[s.session.project] ?? ProjectTotal(name: s.session.project)
+    if let f = s.session.folder, !p.folders.contains(f) { p.folders.append(f) }
+    p.sessions.append(s); p.cost += s.cost; p.tokens += s.tokens; p.last = max(p.last, s.session.end)
+    byName[p.name] = p
+  }
+  return byName.values.map { p in
+    var p = p; p.folders.sort(); p.sessions.sort { $0.cost == $1.cost ? $0.session.end > $1.session.end : $0.cost > $1.cost }
+    return p
+  }.sorted { $0.cost == $1.cost ? ($0.tokens == $1.tokens ? $0.name < $1.name : $0.tokens > $1.tokens) : $0.cost > $1.cost }
+}
+// "45 min", "2 h 13 min", "3 d 4 h". Under a minute is "<1 min".
+func durationText(_ seconds: TimeInterval) -> String {
+  let minutes = Int(max(0, seconds) / 60)
+  if minutes < 1 { return "<1 min" }
+  if minutes < 60 { return "\(minutes) min" }
+  let hours = minutes / 60
+  if hours < 24 { return minutes % 60 == 0 ? "\(hours) h" : "\(hours) h \(minutes % 60) min" }
+  return hours % 24 == 0 ? "\(hours / 24) d" : "\(hours / 24) d \(hours % 24) h"
 }
 // Prices per 1M tokens: [input, cache read, cache write (5 min), output, cache write (1 h)].
 struct PriceEntry: Equatable { var from: String; var rates: [Double] }
@@ -393,6 +480,9 @@ final class Collector: @unchecked Sendable {
   var groups: [String: UsageRow] = [:]; var seen = Set<String>(); var skipped = 0; var unreadable = 0
   // Per-hour rows for every day, for the calendar and the Today chart; a few thousand rows at most.
   var hourGroups: [String: UsageRow] = [:]
+  // Per-session rows, keyed provider|session, with the session's first and last request and its latest folder.
+  private struct SessionGroup { var rows: [String: UsageRow] = [:]; var start: Date; var end: Date; var cwd: String?; var cwdAt: Date? }
+  private var sessionGroups: [String: SessionGroup] = [:]
   // The process environment, for CLAUDE_CONFIG_DIR and CODEX_HOME. Tests pass their own.
   let environment: [String: String]
   init(environment: [String: String] = ProcessInfo.processInfo.environment) { self.environment = environment }
@@ -403,13 +493,19 @@ final class Collector: @unchecked Sendable {
     case parent(String, String)
     // A settings snapshot: whether the thread runs in OpenAI's fast tier ("priority" in the logs), and when.
     case fast(Bool, String)
+    // The session this log belongs to (the root thread for a subagent) and its working folder.
+    case meta(String, String?)
     case usage(String, [String: Int], [String: Int]?)
   }
   private struct Message {
     let key: String; let ts: String; let model: String; let vals: [Int]; let score: Int
     // speed "fast", inference_geo "us" and the web searches the response ran.
     var fast: Bool; var us: Bool; var searches: Int
+    // The Claude Code session (subagents carry their parent's) and the working folder of the request.
+    var session: String?; var cwd: String?
   }
+  // Claude Code names a session twice: the title the user set and the one it generated. The user's wins.
+  private struct SessionTitle { var custom: String?; var ai: String? }
   static func tier(fast: Bool, long: Bool, us: Bool) -> String? {
     let flags = [fast ? "fast" : nil, long ? "long" : nil, us ? "us" : nil].compactMap { $0 }
     return flags.isEmpty ? nil : flags.joined(separator: "+")
@@ -438,7 +534,9 @@ final class Collector: @unchecked Sendable {
       + folder("CLAUDE_CONFIG_DIR")).map { $0.appendingPathComponent("projects") }
     return (unique(codex), unique(claude))
   }
-  private struct FileRecords<T> { let stamp: FileStamp; let records: [T]; let skipped: Int }
+  private struct FileRecords<T> {
+    let stamp: FileStamp; let records: [T]; let skipped: Int; var titles: [String: SessionTitle] = [:]
+  }
   private var codexCache: [String: FileRecords<CodexRecord>] = [:]
   private var claudeCache: [String: FileRecords<Message>] = [:]
   private(set) var filesRead = 0
@@ -519,6 +617,8 @@ final class Collector: @unchecked Sendable {
         if let parent = p["parent_thread_id"] as? String, !parent.isEmpty {
           records.append(.parent(parent, r["timestamp"] as? String ?? ""))
         }
+        let root = (p["session_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? p["id"] as? String
+        if let root { records.append(.meta(root, p["cwd"] as? String)) }
       }
       // Codex writes thread_settings_applied, a snapshot of the settings, before each turn. Older builds skip it
       // before the first turn. turn_context may carry the tier too.
@@ -581,12 +681,22 @@ final class Collector: @unchecked Sendable {
       log.snapshots.first?.fast ?? log.parent.flatMap { tier($0, at: log.spawned, depth: 1) } ?? false
     }
   }
-  private func claudeRecords(_ url: URL, stamp: FileStamp?) -> [Message] {
-    if let cached = claudeCache[url.path], cached.stamp == stamp { skipped += cached.skipped; return cached.records }
+  private func claudeRecords(_ url: URL, stamp: FileStamp?) -> (
+    records: [Message], titles: [String: SessionTitle]
+  ) {
+    if let cached = claudeCache[url.path], cached.stamp == stamp {
+      skipped += cached.skipped; return (cached.records, cached.titles)
+    }
     filesRead += 1
     let beforeSkipped = skipped, beforeUnreadable = unreadable
-    var records: [Message] = []
+    var records: [Message] = []; var titles: [String: SessionTitle] = [:]
     lines(url) { r in
+      if let type = r["type"] as? String, type == "custom-title" || type == "ai-title", let sid = r["sessionId"] as? String {
+        var t = titles[sid] ?? SessionTitle()
+        if let v = r["customTitle"] as? String, !v.isEmpty { t.custom = v }
+        if let v = r["aiTitle"] as? String, !v.isEmpty { t.ai = v }
+        titles[sid] = t; return
+      }
       guard let m = r["message"] as? [String: Any], let u = m["usage"] as? [String: Any],
         let model = m["model"] as? String, model != "<synthetic>", let id = m["id"] as? String ?? r["uuid"] as? String
       else { return }
@@ -601,18 +711,34 @@ final class Collector: @unchecked Sendable {
         Message(
           key: key, ts: r["timestamp"] as? String ?? "", model: model, vals: vals, score: score,
           fast: u["speed"] as? String == "fast", us: u["inference_geo"] as? String == "us",
-          searches: self.integer(u["server_tool_use"] as? [String: Any] ?? [:], "web_search_requests")))
+          searches: self.integer(u["server_tool_use"] as? [String: Any] ?? [:], "web_search_requests"),
+          session: r["sessionId"] as? String, cwd: r["cwd"] as? String))
     }
     if let stamp, beforeUnreadable == unreadable {
-      claudeCache[url.path] = FileRecords(stamp: stamp, records: records, skipped: skipped - beforeSkipped)
+      claudeCache[url.path] = FileRecords(
+        stamp: stamp, records: records, skipped: skipped - beforeSkipped, titles: titles)
     } else {
       claudeCache.removeValue(forKey: url.path)
     }
-    return records
+    return (records, titles)
+  }
+  // Codex keeps thread names in session_index.jsonl next to sessions/, one line per rename; the last one wins.
+  private func codexTitles(_ files: [URL]) -> [String: String] {
+    var titles: [String: String] = [:]
+    for url in files {
+      guard let data = try? Data(contentsOf: url) else { continue }
+      for line in data.split(separator: 10) {
+        guard let r = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any], let id = r["id"] as? String,
+          let name = r["thread_name"] as? String, !name.isEmpty
+        else { continue }
+        titles[id] = name
+      }
+    }
+    return titles
   }
   func add(
     _ ts: String, _ provider: String, _ model: String, _ source: String, _ vals: [Int], tier: String? = nil,
-    searches: Int = 0
+    searches: Int = 0, session: String? = nil, cwd: String? = nil
   ) {
     guard ts.count >= 10 else { skipped += 1; return }
     let date = iso.date(from: ts) ?? plainISO.date(from: ts)
@@ -628,22 +754,35 @@ final class Collector: @unchecked Sendable {
       date: day, provider: provider, model: model, source: source, hour: bratislava.component(.hour, from: d),
       tier: tier)
     h = hourGroups[h.id] ?? h; count(&h); hourGroups[h.id] = h
+    guard let session, !session.isEmpty else { return }
+    let key = provider + "|" + session
+    var g = sessionGroups[key] ?? SessionGroup(start: d, end: d)
+    g.start = min(g.start, d); g.end = max(g.end, d)
+    if let cwd, !cwd.isEmpty, g.cwdAt.map({ d >= $0 }) ?? true { g.cwd = cwd; g.cwdAt = d }
+    var s = UsageRow(date: day, provider: provider, model: model, source: source, tier: tier)
+    s = g.rows[s.id] ?? s; count(&s); g.rows[s.id] = s
+    sessionGroups[key] = g
   }
   func collect(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Dataset {
     collectionLock.lock(); defer { collectionLock.unlock() }
     return autoreleasepool { collectSnapshot(home: home) }
   }
   private func collectSnapshot(home: URL) -> Dataset {
-    groups.removeAll(); seen.removeAll(); hourGroups.removeAll(); skipped = 0; unreadable = 0
+    groups.removeAll(); seen.removeAll(); hourGroups.removeAll(); sessionGroups.removeAll(); skipped = 0
+    unreadable = 0
     // Retain only the small aggregate snapshot between refreshes.
     defer {
       groups.removeAll(keepingCapacity: false); seen.removeAll(keepingCapacity: false)
-      hourGroups.removeAll(keepingCapacity: false)
+      hourGroups.removeAll(keepingCapacity: false); sessionGroups.removeAll(keepingCapacity: false)
     }
     let folders = roots(home: home)
     let codexFiles = folders.codex.flatMap(files), claudeFiles = folders.claude.flatMap(files)
+    // A renamed Codex thread changes only the index, so it counts as a changed file too.
+    var indexPaths = Set<String>()
+    let indexFiles = folders.codex.map { $0.deletingLastPathComponent().appendingPathComponent("session_index.jsonl") }
+      .filter { FileManager.default.fileExists(atPath: $0.path) && indexPaths.insert($0.path).inserted }
     var stamps: [String: FileStamp] = [:]
-    for url in codexFiles + claudeFiles {
+    for url in codexFiles + claudeFiles + indexFiles {
       if let a = try? FileManager.default.attributesOfItem(atPath: url.path),
         let size = a[.size] as? NSNumber, let modified = a[.modificationDate] as? Date,
         let created = a[.creationDate] as? Date, let inode = a[.systemFileNumber] as? NSNumber
@@ -667,13 +806,15 @@ final class Collector: @unchecked Sendable {
     for (index, (path, records)) in codexLogs.enumerated() {
       // While Codex compresses, a rollout exists as .jsonl and .jsonl.zst; both must name the same session.
       var prev: [String: Int] = [:]; var model: String?; var fast = startTier[index]
+      var session: String?; var cwd: String?
       var sid = Collector.compressed(path) ? String(path.lastPathComponent.dropLast(4)) : path.lastPathComponent
       // The first token_count can precede the first turn_context; hold those until the model is known.
       var pending: [(ts: String, vals: [Int], prompt: Int, fast: Bool)] = []
       func usage(_ ts: String, _ name: String, _ vals: [Int], prompt: Int, fast: Bool) {
         add(
           ts, "gpt", name, "Codex", vals,
-          tier: Collector.tier(fast: fast, long: Pricing.isLong(name, prompt: prompt), us: false))
+          tier: Collector.tier(fast: fast, long: Pricing.isLong(name, prompt: prompt), us: false),
+          session: session ?? sid, cwd: cwd)
       }
       func flush(_ name: String) {
         for p in pending { usage(p.ts, name, p.vals, prompt: p.prompt, fast: p.fast) }; pending = []
@@ -684,6 +825,7 @@ final class Collector: @unchecked Sendable {
         case .session(let id): sid = id
         case .model(let name): model = name; flush(name)
         case .parent: break
+        case .meta(let root, let folder): session = root; cwd = folder
         case .fast(let value, _): fast = value
         case .usage(let ts, let t, let last):
           let signature = t.keys.sorted().map { "\($0):\(t[$0]!)" }.joined(separator: ","), key = sid + ts + signature
@@ -706,13 +848,20 @@ final class Collector: @unchecked Sendable {
       }
     }
     var messages: [String: Message] = [:]
+    var claudeTitles: [String: SessionTitle] = [:]
     for path in claudeFiles {
-      for message in claudeRecords(path, stamp: stamps[path.path]) {
+      let file = claudeRecords(path, stamp: stamps[path.path])
+      for (sid, t) in file.titles {
+        var title = claudeTitles[sid] ?? SessionTitle()
+        title.custom = t.custom ?? title.custom; title.ai = t.ai ?? title.ai; claudeTitles[sid] = title
+      }
+      for message in file.records {
         guard let old = messages[message.key] else { messages[message.key] = message; continue }
         // The fullest copy of a streamed response wins; its modifiers and searches hold for every copy.
         var m = message.score >= old.score ? message : old
         m.fast = old.fast || message.fast; m.us = old.us || message.us
         m.searches = max(old.searches, message.searches)
+        m.session = m.session ?? old.session ?? message.session; m.cwd = m.cwd ?? old.cwd ?? message.cwd
         messages[message.key] = m
       }
     }
@@ -721,11 +870,35 @@ final class Collector: @unchecked Sendable {
       add(
         m.ts, "claude", m.model, "Claude Code", m.vals,
         tier: Collector.tier(fast: m.fast, long: Pricing.isLong(m.model, prompt: prompt), us: m.us),
-        searches: m.searches)
+        searches: m.searches, session: m.session, cwd: m.cwd)
     }
+    let titles = codexTitles(indexFiles)
+    var projects: [String: ProjectRef] = [:]
+    func project(_ cwd: String?) -> ProjectRef {
+      let key = cwd ?? ""
+      if let p = projects[key] { return p }
+      let p = projectOf(cwd: cwd, home: home.path) {
+        FileManager.default.fileExists(atPath: ($0 as NSString).appendingPathComponent(".git"))
+      }
+      projects[key] = p; return p
+    }
+    var sessions: [SessionUsage] = []
+    for (key, g) in sessionGroups {
+      let provider = String(key.prefix { $0 != "|" })
+      let id = String(key.dropFirst(provider.count + 1))
+      let ref: ProjectRef = project(g.cwd)
+      var title: String? = titles[id]
+      if provider == "claude" { title = claudeTitles[id]?.custom ?? claudeTitles[id]?.ai }
+      let rows: [UsageRow] = g.rows.values.sorted { (a: UsageRow, b: UsageRow) -> Bool in a.id < b.id }
+      sessions.append(
+        SessionUsage(
+          provider: provider, session: id, project: ref.name, folder: ref.folder, title: title, start: g.start,
+          end: g.end, rows: rows))
+    }
+    sessions.sort { (a: SessionUsage, b: SessionUsage) -> Bool in a.start == b.start ? a.id < b.id : a.start < b.start }
     let result = Dataset(
       updatedAt: plainISO.string(from: Date()), rows: groups.values.sorted { $0.id < $1.id }, skipped: skipped,
-      unreadable: unreadable, hourly: hourGroups.values.sorted { $0.id < $1.id })
+      unreadable: unreadable, hourly: hourGroups.values.sorted { $0.id < $1.id }, sessions: sessions)
     // Retry unreadable files next time; a growing log may finish its last record later.
     lastFiles = unreadable == 0 ? stamps : nil; lastRevision = revision; cachedDataset = result
     return result
