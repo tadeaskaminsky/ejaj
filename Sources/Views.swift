@@ -34,6 +34,13 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
   func applyTheme() {
     NSApp.appearance = theme == "system" ? nil : NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
   }
+  // The Christmas edition: "auto" in season (christmasSeason), or "on" / "off".
+  @Published var christmas = UserDefaults.standard.string(forKey: "christmas").flatMap {
+    ["auto", "on", "off"].contains($0) ? $0 : nil
+  } ?? "auto" {
+    didSet { UserDefaults.standard.set(christmas, forKey: "christmas") }
+  }
+  var festive: Bool { christmas == "on" || (christmas == "auto" && christmasSeason(Date())) }
   @Published var currency = UserDefaults.standard.string(forKey: "currency") == "USD" ? "USD" : "EUR" {
     didSet { UserDefaults.standard.set(currency, forKey: "currency"); onChange?() }
   }
@@ -382,15 +389,89 @@ struct UpdateChip: View {
       }
   }
 }
+// Christmas colours: the bulbs of the garland and the hat. Provider colours stay as they are.
+enum Xmas {
+  static let red = Color(red: 0.90, green: 0.22, blue: 0.24)
+  static let gold = Color(red: 1.0, green: 0.78, blue: 0.30)
+  static let green = Color(red: 0.24, green: 0.74, blue: 0.40)
+  static let bulbs = [red, gold, green, Color(red: 0.40, green: 0.70, blue: 1.0), Color(red: 0.98, green: 0.50, blue: 0.75)]
+}
+// A string of lights hanging in swags across the full width. Every 0.7 s a different set of bulbs dims, so the
+// string twinkles; with Reduce Motion on, it stays lit.
+struct Garland: View {
+  var height: CGFloat = 30
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: 0.7)) { context in
+      let step = reduceMotion ? 0 : Int(context.date.timeIntervalSinceReferenceDate / 0.7)
+      Canvas { gc, size in
+        let swags = max(2, Int((size.width / 210).rounded()))
+        let span = size.width / Double(swags), sag = height * 0.42
+        func wireY(_ x: Double) -> Double { 3 + sag * sin(.pi * (x.truncatingRemainder(dividingBy: span) / span)) }
+        var wire = Path()
+        wire.move(to: CGPoint(x: 0, y: wireY(0)))
+        for x in stride(from: 0.0, through: size.width, by: 3) { wire.addLine(to: CGPoint(x: x, y: wireY(x))) }
+        gc.stroke(wire, with: .color(Color(red: 0.16, green: 0.30, blue: 0.20)), lineWidth: 1.6)
+        let count = max(6, Int(size.width / 34))
+        for i in 0..<count {
+          let x = (Double(i) + 0.5) * size.width / Double(count), y = wireY(x)
+          let color = Xmas.bulbs[i % Xmas.bulbs.count]
+          let lit = (i * 3 + step) % 5 != 0
+          // Glow first, then the socket and the bulb hanging under the wire.
+          if lit {
+            gc.drawLayer { layer in
+              layer.addFilter(.blur(radius: 5))
+              layer.fill(Path(ellipseIn: CGRect(x: x - 8, y: y + 2, width: 16, height: 18)), with: .color(color.opacity(0.55)))
+            }
+          }
+          gc.fill(
+            Path(roundedRect: CGRect(x: x - 2.5, y: y - 1, width: 5, height: 5), cornerRadius: 1),
+            with: .color(Color(red: 0.20, green: 0.26, blue: 0.22)))
+          gc.fill(
+            Path(ellipseIn: CGRect(x: x - 4, y: y + 3.5, width: 8, height: 11)),
+            with: .color(lit ? color : color.opacity(0.28)))
+          if lit {
+            gc.fill(Path(ellipseIn: CGRect(x: x - 2, y: y + 5.5, width: 2.5, height: 3.5)), with: .color(.white.opacity(0.7)))
+          }
+        }
+      }
+    }.frame(height: height).allowsHitTesting(false).accessibilityHidden(true)
+  }
+}
+// A small Santa hat for the logo: red cone, white brim, white bobble.
+struct SantaHat: View {
+  var body: some View {
+    Canvas { gc, size in
+      let w = size.width, h = size.height
+      var cone = Path()
+      cone.move(to: CGPoint(x: w * 0.12, y: h * 0.78))
+      cone.addQuadCurve(to: CGPoint(x: w * 0.86, y: h * 0.16), control: CGPoint(x: w * 0.42, y: h * 0.02))
+      cone.addLine(to: CGPoint(x: w * 0.88, y: h * 0.78))
+      cone.closeSubpath()
+      gc.fill(cone, with: .color(Xmas.red))
+      gc.fill(
+        Path(roundedRect: CGRect(x: 0, y: h * 0.70, width: w, height: h * 0.28), cornerRadius: h * 0.14),
+        with: .color(.white))
+      gc.fill(Path(ellipseIn: CGRect(x: w * 0.74, y: h * 0.02, width: w * 0.26, height: w * 0.26)), with: .color(.white))
+    }.allowsHitTesting(false).accessibilityHidden(true)
+  }
+}
 // The app's mark next to the tabs: the menu-bar waveform on the icon's dark tile.
 struct Wordmark: View {
+  var festive = false
   var body: some View {
     HStack(spacing: 8) {
       Image(systemName: "waveform.path").font(.system(size: 12, weight: .bold)).foregroundStyle(blue)
         .frame(width: 26, height: 26)
         .background(
           RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color(red: 0.12, green: 0.16, blue: 0.22)))
-        .overlay(alignment: .topTrailing) { Circle().fill(orange).frame(width: 5, height: 5).offset(x: -4, y: 4) }
+        .overlay(alignment: .topTrailing) {
+          if festive {
+            SantaHat().frame(width: 22, height: 18).rotationEffect(.degrees(18)).offset(x: 4, y: -12)
+          } else {
+            Circle().fill(orange).frame(width: 5, height: 5).offset(x: -4, y: 4)
+          }
+        }
       Text("EJAJ").font(.system(size: 17, weight: .heavy, design: .rounded)).tracking(0.5)
     }
   }
@@ -771,11 +852,17 @@ struct CalendarPanel: View {
       VStack(alignment: .leading, spacing: 0) {
         HStack(spacing: 4) {
           Text(String(d)).font(.system(size: 11, weight: isToday ? .bold : .medium).monospacedDigit())
-            .foregroundStyle(isToday ? canvas : future ? muted.opacity(0.45) : (total == nil ? muted : ink))
+            .foregroundStyle(isToday ? (store.festive ? .white : canvas) : future ? muted.opacity(0.45) : (total == nil ? muted : ink))
             .padding(.horizontal, isToday ? 5 : 0).frame(minWidth: isToday ? 20 : nil, minHeight: 18)
-            .background { if isToday { Capsule().fill(ink) } }
+            .background { if isToday { Capsule().fill(store.festive ? Xmas.red : ink) } }
           Spacer(minLength: 0)
-          if top { Image(systemName: "flame.fill").font(.system(size: 9)).foregroundStyle(orange) }
+          if store.festive, key.hasSuffix("-12-24") {
+            Image(systemName: "gift.fill").font(.system(size: 9)).foregroundStyle(Xmas.red)
+          }
+          if top {
+            Image(systemName: store.festive ? "star.fill" : "flame.fill").font(.system(size: 9))
+              .foregroundStyle(store.festive ? Xmas.gold : orange)
+          }
         }
         Spacer(minLength: 0)
         if let total {
@@ -1007,7 +1094,9 @@ struct QuickView: View {
         }.font(.system(size: 13, weight: .medium)).foregroundStyle(ink).padding(.horizontal, 15).frame(height: 40)
           .background(blue.opacity(0.22), in: RoundedRectangle(cornerRadius: 10))
       }.buttonStyle(.plain).keyboardShortcut("o")
-    }.padding(22).frame(width: 340).background(canvas).foregroundStyle(ink).preferredColorScheme(store.colorScheme)
+    }.padding(22).padding(.top, store.festive ? 16 : 0)
+      .overlay(alignment: .top) { if store.festive { Garland(height: 26) } }
+      .frame(width: 340).background(canvas).foregroundStyle(ink).preferredColorScheme(store.colorScheme)
   }
 }
 // Spending more is the goal here. Today's API cost against the same weekday over the last 12 weeks,
@@ -1073,8 +1162,9 @@ struct Dashboard: View {
     let rows = store.rows; let both = store.provider == "all"
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
+        if store.festive { Garland().padding(.horizontal, -28).padding(.top, -24).padding(.bottom, -6) }
         HStack(spacing: 18) {
-          Wordmark()
+          Wordmark(festive: store.festive)
           PillPicker(selection: $tab, options: Dashboard.tabs, size: 13).fixedSize()
           Spacer()
           HStack(spacing: 8) {
@@ -1153,6 +1243,9 @@ struct Dashboard: View {
       .pickerStyle(.inline)
       Picker("Appearance", selection: $store.theme) {
         Text("Dark").tag("dark"); Text("Light").tag("light"); Text("System").tag("system")
+      }.pickerStyle(.inline)
+      Picker("Christmas edition", selection: $store.christmas) {
+        Text("Auto, 1 Dec – 6 Jan").tag("auto"); Text("On").tag("on"); Text("Off").tag("off")
       }.pickerStyle(.inline)
       let all = store.dataset?.rows ?? [], starts = restarts(all)
       if !starts.isEmpty || store.countFrom != nil {

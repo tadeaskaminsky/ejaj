@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.0 (2026-11-12)
+
+- Christmas edition. A string of lights hangs across the top of the dashboard and the quick view, and a different set of bulbs dims every 0.7 seconds so the string twinkles. With Reduce Motion on in macOS the lights stay lit. The logo wears a Santa hat. In the calendar, today's date is on a red badge, the month's most expensive day has a gold star instead of the flame and 24 December has a present.
+- It is on from 1 December to 6 January, Bratislava time. **Christmas edition** in the gear menu switches it on or off for good, or back to that season (Auto).
+- Checked: tests for the season's edges (midnight into 1 December, the end of 6 January). Captures of the calendar in dark at 1200 pt, Overview in light at 880 pt and the quick view, from the real logs. The quick view grows 16 pt while the lights hang, so its button stays in view. The twinkling wasn't watched live, since a capture shows one moment.
+
 ## 1.13.1 (2026-11-12)
 
 - Patterns with Today chosen shows only today: one larger tile per hour, in two rows of twelve, with its cost written in, darker for more spent. The current hour is ringed and the hours still to come are outlined. Above the tiles are today's total so far and the busiest hour; under them the hovered or current hour's cost, tokens and requests. Before, Today drew the whole week grid with a single lit row. 7 days and more keep the week grid.

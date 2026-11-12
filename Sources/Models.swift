@@ -170,6 +170,11 @@ func runningSessions(_ sessions: [SessionTotal], now: Date, within: TimeInterval
   sessions.filter { now.timeIntervalSince($0.session.end) <= within && $0.session.end <= now.addingTimeInterval(60) }
     .sorted { $0.session.end > $1.session.end }
 }
+// The Christmas edition's season in Bratislava: 1 December to 6 January (Epiphany), both included.
+func christmasSeason(_ date: Date) -> Bool {
+  let c = bratislava.dateComponents([.month, .day], from: date)
+  return c.month == 12 || (c.month == 1 && (c.day ?? 99) <= 6)
+}
 // "45 min", "2 h 13 min", "3 d 4 h". Under a minute is "<1 min".
 func durationText(_ seconds: TimeInterval) -> String {
   let minutes = Int(max(0, seconds) / 60)

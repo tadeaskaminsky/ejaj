@@ -834,6 +834,13 @@ import Foundation
       totalsBySession([edge, stale, live, ahead], from: nil, through: "2026-11-12", provider: "all"), now: now)
     precondition(running.map(\.session.session) == ["a", "b"])
     print("PASS: cache savings and write premium, week-hour grid, running sessions")
+    // 23:30 UTC on 30 November is already 1 December in Bratislava; 6 January is the last day.
+    let iso = ISO8601DateFormatter()
+    for (t, on) in [
+      ("2026-11-30T22:59:00Z", false), ("2026-11-30T23:30:00Z", true), ("2026-12-24T12:00:00Z", true),
+      ("2027-01-06T22:00:00Z", true), ("2027-01-06T23:30:00Z", false), ("2026-07-01T12:00:00Z", false),
+    ] { precondition(christmasSeason(iso.date(from: t)!) == on, t) }
+    print("PASS: Christmas season from 1 December to 6 January, Bratislava time")
 
     // The collector: a Claude session with a subagent file, titles, and a Codex thread with a subagent under it.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

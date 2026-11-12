@@ -99,8 +99,8 @@ final class QuickPanel: NSPanel {
       // Keep the whole panel below both the visible menu bar and the display cutout.
       let safeTop = min(available.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
       let panelTop = min(anchor.minY, safeTop) - 6
-      // 362 fits the USD line under the euro figure and a two-line verdict.
-      let height = min(CGFloat(362), max(1, panelTop - available.minY - 4))
+      // 362 fits the USD line under the euro figure and a two-line verdict; the Christmas lights need 16 more.
+      let height = min(CGFloat(store.festive ? 378 : 362), max(1, panelTop - available.minY - 4))
       let width: CGFloat = 340
       let x = min(max(anchor.midX - width / 2, available.minX + 6), available.maxX - width - 6)
       // Anchor below the safe area; never overlap a MacBook notch.

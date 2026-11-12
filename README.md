@@ -84,6 +84,8 @@ Titles are the ones you see in the apps: the name you gave a Claude Code session
 
 **Patterns** shows when in the week the money goes. Each square is one hour of a weekday, darker for more spent in the chosen range. On the right is each weekday's total, and under the grid each hour's total. Hover a square for its cost, the average for one such day, its tokens and requests. With Today chosen, Patterns shows only today instead: one larger tile per hour with its cost written in, the current hour ringed and the hours still to come outlined.
 
+**Christmas edition.** From 1 December to 6 January a string of twinkling lights hangs across the top of the dashboard and the quick view, the logo wears a Santa hat, today's date is on a red badge, the month's most expensive day gets a gold star instead of the flame and 24 December a present. Switch it on or off any time with Christmas edition in the gear menu. With Reduce Motion on in macOS, the lights stay lit instead of twinkling.
+
 ### 6. Settings
 
 The gear icon in the dashboard has the settings.
