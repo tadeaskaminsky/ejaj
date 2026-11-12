@@ -82,7 +82,7 @@ Titles are the ones you see in the apps: the name you gave a Claude Code session
 
 **Sessions** starts with **Running now**: every session that sent a request in the last 10 minutes, with what it cost today, and for a session that started on an earlier day also what it cost in total. Running now ignores the range picker. Under it are the range's record sessions (most expensive, most requests, most tokens), and then every session across projects in one table with its project. Type in the search field to find sessions by title or project. A click on any of them opens the session.
 
-**Patterns** shows when in the week the money goes. Each square is one hour of a weekday, darker for more spent in the chosen range. On the right is each weekday's total, and under the grid each hour's total. Hover a square for its cost, the average for one such day, its tokens and requests.
+**Patterns** shows when in the week the money goes. Each square is one hour of a weekday, darker for more spent in the chosen range. On the right is each weekday's total, and under the grid each hour's total. Hover a square for its cost, the average for one such day, its tokens and requests. With Today chosen, Patterns shows only today instead: one larger tile per hour with its cost written in, the current hour ringed and the hours still to come outlined.
 
 ### 6. Settings
 

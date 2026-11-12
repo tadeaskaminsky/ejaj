@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.13.1 (2026-11-12)
+
+- Patterns with Today chosen shows only today: one larger tile per hour, in two rows of twelve, with its cost written in, darker for more spent. The current hour is ringed and the hours still to come are outlined. Above the tiles are today's total so far and the busiest hour; under them the hovered or current hour's cost, tokens and requests. Before, Today drew the whole week grid with a single lit row. 7 days and more keep the week grid.
+- Checked: captures from the real logs in dark at 880 pt and light at 1200 pt. The build and all tests pass. This is the first version installed through the Update button: it was published while 1.13.0 still ran here. Hovering the tiles wasn't tried.
+
 ## 1.13.0 (2026-11-12)
 
 - EJAJ updates itself from its GitHub releases. It checks when it starts and every 6 hours, and when a newer version is out, an **Update** button appears next to Refresh. A click shows what changed. **Install and restart** downloads the release, checks it, replaces the app and opens it again, with settings and history kept. **Check for updates** in the gear menu checks right away.

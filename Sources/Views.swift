@@ -1806,13 +1806,85 @@ struct SearchField: View {
       .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(ink.opacity(0.07)))
   }
 }
+// Patterns on Today: one tile per hour in two rows of twelve, darker for more spent, with the cost written in.
+// Hours still to come are outlined, the current hour is ringed.
+struct TodayHours: View {
+  @ObservedObject var store: UsageStore
+  var now = Date()
+  @ViewState private var hovered: Int?
+  var body: some View {
+    let today = dayFormatter.string(from: now), current = bratislava.component(.hour, from: now)
+    let rows = store.hourlyInRange().filter { $0.date == today }
+    let weekday = (bratislava.component(.weekday, from: now) + 5) % 7
+    let hours = weekHourGrid(rows).cells[weekday]
+    let top = hours.map(\.cost).max() ?? 0, total = hours.reduce(0) { $0 + $1.cost }
+    let busiest = top > 0 ? hours.firstIndex { $0.cost == top } : nil
+    Panel {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(spacing: 8) {
+          Image(systemName: "clock").foregroundStyle(muted)
+          Text("Today, hour by hour").font(.system(size: 14, weight: .semibold))
+          Spacer()
+          Text(
+            store.money(total) + " so far" + (busiest.map { " · busiest hour " + hourLabel($0) } ?? "")
+          ).font(.system(size: 11).monospacedDigit()).foregroundStyle(muted)
+        }
+        VStack(spacing: 8) {
+          ForEach([0, 12], id: \.self) { start in
+            HStack(spacing: 8) {
+              ForEach(start..<start + 12, id: \.self) { h in
+                tile(h, hours[h], top: top, current: current)
+              }
+            }
+          }
+        }
+        detail(hovered ?? current, hours)
+      }
+    }
+  }
+  private func tile(_ h: Int, _ cell: WeekHour, top: Double, current: Int) -> some View {
+    let future = h > current, on = hovered == h
+    let fill: Color =
+      future ? .clear : cell.cost > 0 ? orange.opacity(0.12 + 0.78 * (cell.cost / top).squareRoot()) : ink.opacity(0.04)
+    return VStack(alignment: .leading, spacing: 0) {
+      Text(hourLabel(h)).font(.system(size: 10, weight: h == current ? .bold : .medium).monospacedDigit())
+        .foregroundStyle(future ? muted.opacity(0.5) : cell.cost > 0 ? ink : muted)
+      Spacer(minLength: 0)
+      if cell.cost > 0 {
+        Text(store.money(cell.cost)).font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+          .lineLimit(1).minimumScaleFactor(0.6)
+      }
+    }.padding(8).frame(maxWidth: .infinity, alignment: .leading).frame(height: 76)
+      .background(fill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay {
+        RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(
+          on || h == current ? ink : future ? ink.opacity(0.08) : .clear,
+          style: StrokeStyle(lineWidth: on || h == current ? 1.5 : 1, dash: future && !on ? [3, 3] : []))
+      }
+      .onHover { inside in hovered = inside ? h : (hovered == h ? nil : hovered) }
+  }
+  // The hovered hour, or the current one.
+  private func detail(_ h: Int, _ hours: [WeekHour]) -> some View {
+    let cell = hours[h]
+    return HStack(spacing: 12) {
+      Text(String(format: "%02d:00–%02d:00", h, h + 1)).fontWeight(.semibold)
+      Text(store.money(cell.cost)).monospacedDigit()
+      Spacer()
+      Text(exact(cell.tokens) + " tokens · " + exact(cell.requests) + " requests").foregroundStyle(muted).monospacedDigit()
+    }.font(.system(size: 11)).lineLimit(1).frame(height: 18)
+  }
+}
 // The Patterns tab: when in the week the money goes, as a weekday × hour heatmap with totals along both edges.
 struct PatternsView: View {
   @ObservedObject var store: UsageStore
   @ViewState private var hovered: (day: Int, hour: Int)?
   private static let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
   private static let longDays = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
+  // With Today chosen a week grid would be one lit row out of seven, so today gets its own larger view.
   var body: some View {
+    if store.days == 1 { TodayHours(store: store) } else { week }
+  }
+  @ViewBuilder private var week: some View {
     let rows = store.hourlyInRange()
     let grid = weekHourGrid(rows)
     let maxCell = grid.cells.flatMap { $0.map(\.cost) }.max() ?? 0
