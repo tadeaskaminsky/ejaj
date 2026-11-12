@@ -716,6 +716,40 @@ import Foundation
     precondition(marked[0].cost == 19 && marked[0].unpriced && marked[0].sessions.filter(\.unpriced).count == 1)
     precondition(!all.contains(where: \.unpriced))
     print("PASS: projects from working folders, worktrees, scratch; session totals by range, platform and project")
+    // Opus 5: input 5, read 0.5, write 6.25, write 1h 10. A million of each: reads save 4.5, writes add 1.25 + 5.
+    let cachedRow = UsageRow(
+      date: "2026-11-10", provider: "claude", model: "claude-opus-5", source: "t", input: 1_000_000, cached: 1_000_000,
+      write: 1_000_000, write1h: 1_000_000)
+    precondition(cachedRow.cacheEffect == CacheEffect(saved: 4.5, premium: 6.25))
+    var fastRow = cachedRow; fastRow.tier = "fast"
+    precondition(fastRow.cacheEffect == CacheEffect(saved: 9, premium: 12.5) && cacheEffect([cachedRow, fastRow]).net == -5.25)
+    // The 5-minute and the 1-hour writes have their own rates: 1M at 6.25 and 2M at 10, less input, add 1.25 + 10.
+    var mixedWrites = cachedRow; mixedWrites.write1h = 2_000_000
+    precondition(mixedWrites.cacheEffect == CacheEffect(saved: 4.5, premium: 11.25))
+    var unpricedRow = cachedRow; unpricedRow.model = "nope"
+    precondition(unpricedRow.cacheEffect == nil && cacheEffect([unpricedRow, cachedRow]).saved == 4.5)
+    // 2026-11-09 is a Monday, 2026-11-15 a Sunday.
+    func hourRow(_ date: String, _ hour: Int?, _ input: Int) -> UsageRow {
+      UsageRow(date: date, provider: "claude", model: "claude-opus-5", source: "t", input: input, requests: 1, hour: hour)
+    }
+    let grid = weekHourGrid([
+      hourRow("2026-11-09", 9, 1_000_000), hourRow("2026-11-16", 9, 1_000_000), hourRow("2026-11-15", 23, 2_000_000),
+      hourRow("2026-11-09", 14, 1_000_000),
+      hourRow("2026-11-15", nil, 5), hourRow("bad", 3, 5),
+    ])
+    // Two hours on the same Monday are one day.
+    precondition(grid.cells[0][9] == WeekHour(cost: 10, tokens: 2_000_000, requests: 2) && grid.days[0] == 2)
+    precondition(grid.cells[6][23].cost == 10 && grid.days[6] == 1 && grid.cells[3].allSatisfy { $0 == WeekHour() })
+    let now = t0.addingTimeInterval(3600)
+    // Ten minutes is the edge; newest first; a clock ahead by more than a minute doesn't count as running.
+    var live = list[0]; live.end = now.addingTimeInterval(-120)
+    var edge = list[1]; edge.end = now.addingTimeInterval(-600)
+    var stale = list[2]; stale.end = now.addingTimeInterval(-601)
+    var ahead = list[0]; ahead.session = "d"; ahead.end = now.addingTimeInterval(120)
+    let running = runningSessions(
+      totalsBySession([edge, stale, live, ahead], from: nil, through: "2026-11-12", provider: "all"), now: now)
+    precondition(running.map(\.session.session) == ["a", "b"])
+    print("PASS: cache savings and write premium, week-hour grid, running sessions")
 
     // The collector: a Claude session with a subagent file, titles, and a Codex thread with a subagent under it.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -131,6 +131,45 @@ func totalsByProject(_ sessions: [SessionTotal]) -> [ProjectTotal] {
     return p
   }.sorted { $0.cost == $1.cost ? ($0.tokens == $1.tokens ? $0.name < $1.name : $0.tokens > $1.tokens) : $0.cost > $1.cost }
 }
+// What the prompt cache did to the bill: cache reads cost less than fresh input (saved), cache writes cost more
+// (premium). Both are measured against paying the input price for those tokens, with the row's modifiers.
+struct CacheEffect: Equatable {
+  var saved = 0.0; var premium = 0.0
+  var net: Double { saved - premium }
+  static func + (a: CacheEffect, b: CacheEffect) -> CacheEffect {
+    CacheEffect(saved: a.saved + b.saved, premium: a.premium + b.premium)
+  }
+}
+extension UsageRow {
+  var cacheEffect: CacheEffect? {
+    guard let p = Pricing.rates(model, on: date) else { return nil }
+    let m = Pricing.multipliers(model, tier: tier).input
+    return CacheEffect(
+      saved: Double(cached) * (p[0] - p[1]) * m / 1_000_000,
+      premium: (Double(write) * (p[2] - p[0]) + Double(write1h) * (p[4] - p[0])) * m / 1_000_000)
+  }
+}
+func cacheEffect(_ rows: [UsageRow]) -> CacheEffect { rows.reduce(CacheEffect()) { $0 + ($1.cacheEffect ?? CacheEffect()) } }
+// Hourly rows summed into a week: [weekday][hour], Monday first, Bratislava time. Also how many distinct days of each
+// weekday had any usage, for per-day averages.
+struct WeekHour: Equatable { var cost = 0.0; var tokens = 0; var requests = 0 }
+func weekHourGrid(_ hourly: [UsageRow]) -> (cells: [[WeekHour]], days: [Int]) {
+  var cells = Array(repeating: Array(repeating: WeekHour(), count: 24), count: 7)
+  var seen = Array(repeating: Set<String>(), count: 7)
+  let cal = bratislava
+  for r in hourly {
+    guard let h = r.hour, (0..<24).contains(h), let d = dayFormatter.date(from: r.date) else { continue }
+    let w = (cal.component(.weekday, from: d) + 5) % 7
+    cells[w][h].cost += r.cost ?? 0; cells[w][h].tokens += r.tokens; cells[w][h].requests += r.requests
+    seen[w].insert(r.date)
+  }
+  return (cells, seen.map(\.count))
+}
+// Sessions whose last request is at most `within` seconds before `now`, newest first.
+func runningSessions(_ sessions: [SessionTotal], now: Date, within: TimeInterval = 600) -> [SessionTotal] {
+  sessions.filter { now.timeIntervalSince($0.session.end) <= within && $0.session.end <= now.addingTimeInterval(60) }
+    .sorted { $0.session.end > $1.session.end }
+}
 // "45 min", "2 h 13 min", "3 d 4 h". Under a minute is "<1 min".
 func durationText(_ seconds: TimeInterval) -> String {
   let minutes = Int(max(0, seconds) / 60)
