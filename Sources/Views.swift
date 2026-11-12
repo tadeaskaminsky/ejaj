@@ -396,18 +396,21 @@ enum Xmas {
   static let green = Color(red: 0.24, green: 0.74, blue: 0.40)
   static let bulbs = [red, gold, green, Color(red: 0.40, green: 0.70, blue: 1.0), Color(red: 0.98, green: 0.50, blue: 0.75)]
 }
-// A string of lights hanging in swags across the full width. Every 0.7 s a different set of bulbs dims, so the
-// string twinkles; with Reduce Motion on, it stays lit.
+// A string of lights hanging in swags across the full width. Every 0.7 s a different scattering of bulbs dims, so the
+// string twinkles; which bulbs dim doesn't follow their colour, so no colour ever goes dark as a whole. With Reduce
+// Motion on, the lights stay lit. The frame is tall enough for the lowest bulb and its glow, so nothing is cut off.
 struct Garland: View {
-  var height: CGFloat = 30
+  // `at` fixes the moment, for renders; nil follows the clock.
+  var at: Date? = nil
+  static let height: CGFloat = 42
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   var body: some View {
     TimelineView(.periodic(from: .now, by: 0.7)) { context in
-      let step = reduceMotion ? 0 : Int(context.date.timeIntervalSinceReferenceDate / 0.7)
+      let step = reduceMotion ? -1 : Int((at ?? context.date).timeIntervalSinceReferenceDate / 0.7)
       Canvas { gc, size in
-        let swags = max(2, Int((size.width / 210).rounded()))
-        let span = size.width / Double(swags), sag = height * 0.42
-        func wireY(_ x: Double) -> Double { 3 + sag * sin(.pi * (x.truncatingRemainder(dividingBy: span) / span)) }
+        let top = 4.0, sag = 9.0
+        let swags = max(2, Int((size.width / 210).rounded())), span = size.width / Double(swags)
+        func wireY(_ x: Double) -> Double { top + sag * sin(.pi * (x.truncatingRemainder(dividingBy: span) / span)) }
         var wire = Path()
         wire.move(to: CGPoint(x: 0, y: wireY(0)))
         for x in stride(from: 0.0, through: size.width, by: 3) { wire.addLine(to: CGPoint(x: x, y: wireY(x))) }
@@ -416,26 +419,24 @@ struct Garland: View {
         for i in 0..<count {
           let x = (Double(i) + 0.5) * size.width / Double(count), y = wireY(x)
           let color = Xmas.bulbs[i % Xmas.bulbs.count]
-          let lit = (i * 3 + step) % 5 != 0
-          // Glow first, then the socket and the bulb hanging under the wire.
-          if lit {
-            gc.drawLayer { layer in
-              layer.addFilter(.blur(radius: 5))
-              layer.fill(Path(ellipseIn: CGRect(x: x - 8, y: y + 2, width: 16, height: 18)), with: .color(color.opacity(0.55)))
-            }
+          let on = step < 0 || bulbLit(i, step: step)
+          // Glow, then the socket and the bulb hanging under the wire. A dimmed bulb keeps a little colour and glow.
+          gc.drawLayer { layer in
+            layer.addFilter(.blur(radius: 5))
+            layer.fill(
+              Path(ellipseIn: CGRect(x: x - 8, y: y + 2, width: 16, height: 18)),
+              with: .color(color.opacity(on ? 0.6 : 0.15)))
           }
           gc.fill(
             Path(roundedRect: CGRect(x: x - 2.5, y: y - 1, width: 5, height: 5), cornerRadius: 1),
             with: .color(Color(red: 0.20, green: 0.26, blue: 0.22)))
-          gc.fill(
-            Path(ellipseIn: CGRect(x: x - 4, y: y + 3.5, width: 8, height: 11)),
-            with: .color(lit ? color : color.opacity(0.28)))
-          if lit {
+          gc.fill(Path(ellipseIn: CGRect(x: x - 4, y: y + 3.5, width: 8, height: 11)), with: .color(color.opacity(on ? 1 : 0.5)))
+          if on {
             gc.fill(Path(ellipseIn: CGRect(x: x - 2, y: y + 5.5, width: 2.5, height: 3.5)), with: .color(.white.opacity(0.7)))
           }
         }
       }
-    }.frame(height: height).allowsHitTesting(false).accessibilityHidden(true)
+    }.frame(height: Garland.height).allowsHitTesting(false).accessibilityHidden(true)
   }
 }
 // A small Santa hat for the logo: red cone, white brim, white bobble.
@@ -1094,8 +1095,8 @@ struct QuickView: View {
         }.font(.system(size: 13, weight: .medium)).foregroundStyle(ink).padding(.horizontal, 15).frame(height: 40)
           .background(blue.opacity(0.22), in: RoundedRectangle(cornerRadius: 10))
       }.buttonStyle(.plain).keyboardShortcut("o")
-    }.padding(22).padding(.top, store.festive ? 16 : 0)
-      .overlay(alignment: .top) { if store.festive { Garland(height: 26) } }
+    }.padding(22).padding(.top, store.festive ? 18 : 0)
+      .overlay(alignment: .top) { if store.festive { Garland() } }
       .frame(width: 340).background(canvas).foregroundStyle(ink).preferredColorScheme(store.colorScheme)
   }
 }
@@ -1162,7 +1163,7 @@ struct Dashboard: View {
     let rows = store.rows; let both = store.provider == "all"
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
-        if store.festive { Garland().padding(.horizontal, -28).padding(.top, -24).padding(.bottom, -6) }
+        if store.festive { Garland().padding(.horizontal, -28).padding(.top, -26).padding(.bottom, -18) }
         HStack(spacing: 18) {
           Wordmark(festive: store.festive)
           PillPicker(selection: $tab, options: Dashboard.tabs, size: 13).fixedSize()

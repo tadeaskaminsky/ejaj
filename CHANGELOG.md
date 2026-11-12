@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.1 (2026-11-12)
+
+- The Christmas lights are no longer cut off. Their frame was shorter than the lowest bulbs and their glow, so the bottom was sliced flat in the dashboard and the quick view. The frame now fits all of it, and the quick view grows by 18 pt for it.
+- The twinkle no longer turns off a whole colour at once. Which bulbs dimmed followed their position, and so their colour: at each moment all the green ones, say, went dark, which looked like a dead bulb. Bulbs now dim in a scattered pattern, about one in five, and a dimmed bulb keeps some colour and glow.
+- Checked: a test that over 200 steps every colour keeps a lit bulb and the dimmed bulbs keep moving. Captures of the dashboard in dark at 880 pt and of the quick view, with nothing cut off.
+
 ## 1.14.0 (2026-11-12)
 
 - Christmas edition. A string of lights hangs across the top of the dashboard and the quick view, and a different set of bulbs dims every 0.7 seconds so the string twinkles. With Reduce Motion on in macOS the lights stay lit. The logo wears a Santa hat. In the calendar, today's date is on a red badge, the month's most expensive day has a gold star instead of the flame and 24 December has a present.

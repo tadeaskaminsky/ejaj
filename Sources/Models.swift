@@ -175,6 +175,13 @@ func christmasSeason(_ date: Date) -> Bool {
   let c = bratislava.dateComponents([.month, .day], from: date)
   return c.month == 12 || (c.month == 1 && (c.day ?? 99) <= 6)
 }
+// Whether a bulb of the Christmas garland is lit at a twinkle step: about four in five are, scattered by a hash of the
+// bulb and the step, so which ones dim has nothing to do with their colour.
+func bulbLit(_ bulb: Int, step: Int) -> Bool {
+  var h = UInt64(truncatingIfNeeded: bulb) &* 0x9E37_79B9_7F4A_7C15 ^ UInt64(truncatingIfNeeded: step) &* 0xBF58_476D_1CE4_E5B9
+  h ^= h >> 31; h = h &* 0x94D0_49BB_1331_11EB; h ^= h >> 29
+  return h % 5 != 0
+}
 // "45 min", "2 h 13 min", "3 d 4 h". Under a minute is "<1 min".
 func durationText(_ seconds: TimeInterval) -> String {
   let minutes = Int(max(0, seconds) / 60)

@@ -840,7 +840,17 @@ import Foundation
       ("2026-11-30T22:59:00Z", false), ("2026-11-30T23:30:00Z", true), ("2026-12-24T12:00:00Z", true),
       ("2027-01-06T22:00:00Z", true), ("2027-01-06T23:30:00Z", false), ("2026-07-01T12:00:00Z", false),
     ] { precondition(christmasSeason(iso.date(from: t)!) == on, t) }
-    print("PASS: Christmas season from 1 December to 6 January, Bratislava time")
+    // A garland of 30 bulbs in 5 colours: at every step each colour keeps a lit bulb, and the dimmed ones move.
+    var dimmedSets = Set<[Int]>()
+    for step in 0..<200 {
+      let lit = (0..<30).map { bulbLit($0, step: step) }
+      for colour in 0..<5 { precondition((0..<30).contains { $0 % 5 == colour && lit[$0] }, "colour \(colour) dark at \(step)") }
+      let share = Double(lit.filter { $0 }.count) / 30
+      precondition(share > 0.5 && share < 1 || share == 1, "\(share) lit at \(step)")
+      dimmedSets.insert((0..<30).filter { !lit[$0] })
+    }
+    precondition(dimmedSets.count > 150)
+    print("PASS: Christmas season from 1 December to 6 January, Bratislava time; garland twinkle never darkens a colour")
 
     // The collector: a Claude session with a subagent file, titles, and a Codex thread with a subagent under it.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
