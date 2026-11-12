@@ -1010,3 +1010,131 @@ func costDetails(_ b: Breakdown, _ money: (Double) -> String) -> [(String, Strin
     ("Output", money(b.cost.output)),
   ] + (b.searches > 0 ? [("Web search", money(b.cost.search))] : [])
 }
+
+// Notifications. Each kind fires at most once for what it is about: a record once per day, each Claude week warning
+// once per week, an update once per version. NoticeLog remembers what was sent, across launches.
+struct NoticeLog: Codable, Equatable {
+  var recordDay: String? = nil
+  var week: [String] = []
+  var update: String? = nil
+}
+struct Notice: Equatable {
+  enum Kind: Equatable { case record(String), week(String), update(String) }
+  var kind: Kind; var title: String; var body: String
+}
+func noted(_ n: Notice, in log: NoticeLog) -> NoticeLog {
+  var log = log
+  switch n.kind {
+  case .record(let day): log.recordDay = day
+  case .week(let key): log.week = Array((log.week + [key]).suffix(12))
+  case .update(let version): log.update = version
+  }
+  return log
+}
+// Today above every earlier day, once at least 5 earlier days had any cost.
+func recordNotice(costByDay: [String: Double], today: String, log: NoticeLog, money: (Double) -> String) -> Notice? {
+  guard log.recordDay != today, let now = costByDay[today], now > 0 else { return nil }
+  let past = costByDay.filter { $0.key < today && $0.value > 0 }
+  guard past.count >= 5, let best = past.max(by: { $0.value < $1.value }), now > best.value else { return nil }
+  let when = dayFormatter.date(from: best.key).map { slovakDay.string(from: $0) } ?? best.key
+  return Notice(
+    kind: .record(today), title: "NOVÝ REKORD",
+    body: "Dnes si prejebal už \(money(now)), viac než kedykoľvek predtým. Doterajší rekord bol \(money(best.value)), \(when).")
+}
+private let slovakDay: DateFormatter = {
+  let f = DateFormatter(); f.dateFormat = "d. M."; f.locale = Locale(identifier: "sk_SK")
+  f.timeZone = dayFormatter.timeZone; return f
+}()
+// The Claude plan's week: a warning when the pace runs out before the reset (from half the limit on), and another at
+// 90 % used. `time` formats a moment, e.g. "so 07:00".
+func weekNotice(used: Double, resetsAt: Date, now: Date, log: NoticeLog, time: (Date) -> String) -> Notice? {
+  guard resetsAt > now else { return nil }
+  let week = String(Int((resetsAt.timeIntervalSince1970 / 3600).rounded()))
+  if used >= 90, !log.week.contains(week + "|90") {
+    return Notice(
+      kind: .week(week + "|90"), title: "Claude týždeň: \(Int(used.rounded())) % minuté",
+      body: "Zostáva \(max(0, Int((100 - used).rounded()))) %. Limit sa obnoví \(time(resetsAt)).")
+  }
+  if used >= 50, used < 90, !log.week.contains(week + "|pace"),
+    let out = weekRunsOut(used: used, resetsAt: resetsAt, now: now)
+  {
+    return Notice(
+      kind: .week(week + "|pace"), title: "Claude týždeň dôjde skôr",
+      body: "Pri tomto tempe minieš limit okolo \(time(out)), obnoví sa až \(time(resetsAt)). Minuté \(Int(used.rounded())) %.")
+  }
+  return nil
+}
+func updateNotice(version: String, log: NoticeLog) -> Notice? {
+  log.update == version
+    ? nil
+    : Notice(kind: .update(version), title: "EJAJ \(version) je vonku", body: "Otvor dashboard a klikni na Update.")
+}
+
+// The year Wrapped is about: the current one, except in January (still the Christmas season), when it is the year that
+// just ended.
+func wrappedYear(_ now: Date) -> Int {
+  let c = bratislava.dateComponents([.year, .month], from: now)
+  return (c.year ?? 2026) - (c.month == 1 ? 1 : 0)
+}
+// EJAJ Wrapped: one year in numbers, from the daily rows, the hourly rows and the sessions of that year.
+struct WrappedAmount: Equatable { var name: String; var cost: Double; var count = 0 }
+struct Wrapped: Equatable {
+  var year: Int
+  var cost = 0.0; var tokens = 0; var requests = 0; var activeDays = 0
+  var unpricedTokens = 0  // tokens of models without a price: in `tokens`, missing from `cost`
+  var cache = CacheEffect()
+  var firstDay: String? = nil
+  var topDay: WrappedAmount? = nil  // name is the day
+  var providers: [WrappedAmount] = []  // name is "claude" or "gpt"
+  var models: [WrappedAmount] = []  // by cost, dearest first; count is requests
+  var projects: [WrappedAmount] = []  // by cost; count is sessions
+  var topSession: SessionTotal? = nil
+  var busiestWeekday: Int? = nil  // 0 = Monday
+  var busiestHour: Int? = nil
+  var streak = 0; var streakEnd: String? = nil
+  static func == (a: Wrapped, b: Wrapped) -> Bool {
+    a.year == b.year && a.cost == b.cost && a.tokens == b.tokens && a.topDay == b.topDay && a.models == b.models
+      && a.projects == b.projects && a.streak == b.streak && a.topSession?.id == b.topSession?.id
+  }
+}
+// `countFrom` is the gear menu's Count from: days before it are left out of the sessions as they are of the rows.
+func wrapped(year: Int, rows: [UsageRow], hourly: [UsageRow], sessions: [SessionUsage], countFrom: String? = nil) -> Wrapped {
+  let prefix = String(year) + "-"
+  let rows = rows.filter { $0.date.hasPrefix(prefix) }, hourly = hourly.filter { $0.date.hasPrefix(prefix) }
+  var w = Wrapped(year: year)
+  var byDay: [String: Double] = [:], byModel: [String: WrappedAmount] = [:], byProvider: [String: Double] = [:]
+  for r in rows {
+    let c = r.cost ?? 0
+    w.cost += c; w.tokens += r.tokens; w.requests += r.requests
+    if r.cost == nil { w.unpricedTokens += r.tokens }
+    byDay[r.date, default: 0] += c
+    byProvider[r.provider, default: 0] += c
+    var m = byModel[r.model] ?? WrappedAmount(name: r.model, cost: 0); m.cost += c; m.count += r.requests
+    byModel[r.model] = m
+  }
+  w.cache = cacheEffect(rows)
+  let days = Set(rows.filter { $0.tokens > 0 }.map(\.date)).sorted()
+  w.activeDays = days.count; w.firstDay = days.first
+  if let top = byDay.max(by: { $0.value < $1.value }), top.value > 0 { w.topDay = WrappedAmount(name: top.key, cost: top.value) }
+  w.providers = byProvider.map { WrappedAmount(name: $0.key, cost: $0.value) }.sorted { $0.cost > $1.cost }
+  w.models = byModel.values.filter { $0.cost > 0 }.sorted { $0.cost == $1.cost ? $0.name < $1.name : $0.cost > $1.cost }
+  let totals = totalsBySession(
+    sessions, from: max(prefix + "01-01", countFrom ?? ""), through: prefix + "12-31", provider: "all")
+  w.projects = totalsByProject(totals).map { WrappedAmount(name: $0.name, cost: $0.cost, count: $0.sessions.count) }
+  w.topSession = totals.max { $0.cost < $1.cost }
+  let grid = weekHourGrid(hourly)
+  let dayCost = grid.cells.map { $0.reduce(0) { $0 + $1.cost } }
+  let hourCost = (0..<24).map { h in grid.cells.reduce(0) { $0 + $1[h].cost } }
+  if let d = dayCost.indices.max(by: { dayCost[$0] < dayCost[$1] }), dayCost[d] > 0 { w.busiestWeekday = d }
+  if let h = hourCost.indices.max(by: { hourCost[$0] < hourCost[$1] }), hourCost[h] > 0 { w.busiestHour = h }
+  // The longest run of consecutive days with any use.
+  var run = 0, previous: Date?
+  for day in days {
+    guard let d = dayFormatter.date(from: day) else { continue }
+    let next = previous.flatMap { bratislava.date(byAdding: .day, value: 1, to: $0) }
+    run = next.map { bratislava.isDate($0, inSameDayAs: d) } == true ? run + 1 : 1
+    if run > w.streak { w.streak = run; w.streakEnd = day }
+    previous = d
+  }
+  return w
+}

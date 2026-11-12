@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.15.0 (2026-11-12)
+
+- Notifications, in Slovak like the quick view. **NOVÝ REKORD** when today costs more than any earlier day (once a day, after at least five earlier days of use). **Claude týždeň dôjde skôr** when the week's pace runs out before the reset, from half the limit on, and **Claude týždeň: 90 % minuté** at 90 % (each once a week). **EJAJ X je vonku** when a new version is on GitHub (once per version). What was sent is remembered across restarts, and a notice macOS couldn't show yet (no permission) comes again later. A click opens the dashboard; **Notifications** in the gear menu turns them off.
+- **EJAJ Wrapped 2026**, from the gear menu or, in the Christmas season, a banner on Overview. Nine pages, one number at a time: the year's spend, tokens and days of use, what the cache saved, the biggest day, the projects and the session that cost the most, the model of the year, the weekday and hour you work hardest and the longest streak of days in a row. The last page is a card to copy for Slack or save as a PNG. In January it shows the year that just ended. On this Mac: €4,839 over 85 days, €31,209 saved by the cache, Opus 5.5, Thursdays at 14:00.
+- Checked: tests for when each notice fires and that it fires once, the week's 50 % and 90 % edges, and the Wrapped figures (year filter, Count from on sessions, top day, models by cost with their requests, projects, busiest hour, streak across days, the cache saving, tokens of unpriced models, January's year). Renders of every Wrapped page and the card from the real logs. A review with correctness, tests and silent-failure passes; its findings were fixed: Wrapped projects ignored Count from and could exceed the year's total, notices were logged as sent before macOS allowed them, the year was fixed at launch, unpriced tokens went unmentioned and copy or save gave no feedback. The build was tried in the running app on this Mac before the release.
+
 ## 1.14.1 (2026-11-12)
 
 - The Christmas lights are no longer cut off. Their frame was shorter than the lowest bulbs and their glow, so the bottom was sliced flat in the dashboard and the quick view. The frame now fits all of it, and the quick view grows by 18 pt for it.

@@ -58,6 +58,8 @@ final class QuickPanel: NSPanel {
       self.status.button?.toolTip =
         "EJAJ · today \(exact(self.store.total(r))) tokens · API estimate \(self.store.moneyWithUSD(self.store.cost(r)))"
     }
+    Notifier.shared.open = { [weak self] in self?.openDashboard() }
+    Notifier.shared.start()
     store.start()
     if !UserDefaults.standard.bool(forKey: "hasOpenedEJAJ") {
       UserDefaults.standard.set(true, forKey: "hasOpenedEJAJ"); openDashboard()

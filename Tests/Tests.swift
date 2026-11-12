@@ -659,6 +659,84 @@ import Foundation
     try sessionTests()
     try updateTests()
   }
+  static func noticeAndWrappedTests() throws {
+    let money = { (v: Double) in String(format: "€%.2f", v) }
+    var costs = ["2026-11-01": 10.0, "2026-11-02": 50, "2026-11-03": 20, "2026-11-04": 5, "2026-11-05": 0, "2026-11-12": 60]
+    var log = NoticeLog()
+    // Four earlier days of use are too few for a record.
+    precondition(recordNotice(costByDay: costs, today: "2026-11-12", log: log, money: money) == nil)
+    costs["2026-11-06"] = 1
+    let record = recordNotice(costByDay: costs, today: "2026-11-12", log: log, money: money)!
+    precondition(record.kind == .record("2026-11-12") && record.body.contains("€60.00") && record.body.contains("€50.00, 2. 11."))
+    log = noted(record, in: log)
+    precondition(recordNotice(costByDay: costs, today: "2026-11-12", log: log, money: money) == nil)
+    costs["2026-11-12"] = 50
+    precondition(recordNotice(costByDay: costs, today: "2026-11-13", log: NoticeLog(), money: money) == nil)
+    precondition(recordNotice(costByDay: costs, today: "2026-11-12", log: NoticeLog(), money: money) == nil)
+    // The week: 2 of 7 days gone with 60 % used runs out before the reset; 90 % warns again; each once.
+    let reset = Date(timeIntervalSince1970: 1_800_000_000), now = reset.addingTimeInterval(-5 * 86_400)
+    let time = { (d: Date) in String(Int(d.timeIntervalSince1970)) }
+    let pace = weekNotice(used: 60, resetsAt: reset, now: now, log: NoticeLog(), time: time)!
+    precondition(pace.title == "Claude týždeň dôjde skôr" && pace.body.contains("60 %"))
+    var weekLog = noted(pace, in: NoticeLog())
+    precondition(weekNotice(used: 70, resetsAt: reset, now: now, log: weekLog, time: time) == nil)
+    precondition(weekNotice(used: 40, resetsAt: reset, now: reset.addingTimeInterval(-6.9 * 86_400), log: NoticeLog(), time: time) == nil)
+    // Under half the limit nothing warns, even at a pace that would run out (40 % in 2 of 7 days).
+    precondition(weekNotice(used: 40, resetsAt: reset, now: now, log: NoticeLog(), time: time) == nil)
+    precondition(weekNotice(used: 90, resetsAt: reset, now: now, log: weekLog, time: time)?.title == "Claude týždeň: 90 % minuté")
+    precondition(weekNotice(used: 60, resetsAt: reset, now: reset.addingTimeInterval(-60), log: NoticeLog(), time: time) == nil)
+    let ninety = weekNotice(used: 91.4, resetsAt: reset, now: now, log: weekLog, time: time)!
+    precondition(ninety.title == "Claude týždeň: 91 % minuté" && ninety.body.contains("Zostáva 9 %"))
+    weekLog = noted(ninety, in: weekLog)
+    precondition(weekNotice(used: 95, resetsAt: reset, now: now, log: weekLog, time: time) == nil)
+    precondition(weekNotice(used: 95, resetsAt: reset.addingTimeInterval(7 * 86_400), now: now, log: weekLog, time: time) != nil)
+    precondition(weekNotice(used: 95, resetsAt: now.addingTimeInterval(-1), now: now, log: NoticeLog(), time: time) == nil)
+    let update = updateNotice(version: "1.15.0", log: NoticeLog())!
+    precondition(update.title == "EJAJ 1.15.0 je vonku" && updateNotice(version: "1.15.0", log: noted(update, in: NoticeLog())) == nil)
+    print("PASS: record, Claude week and update notifications, each once")
+
+    // Wrapped 2026: Opus 5 at $5 input. Rows from 2025 and 2027 stay out.
+    func r(_ date: String, _ provider: String, _ model: String, _ input: Int, hour: Int? = nil) -> UsageRow {
+      UsageRow(date: date, provider: provider, model: model, source: "t", input: input, requests: 1, hour: hour)
+    }
+    let rows = [
+      r("2025-12-31", "claude", "claude-opus-5", 9_000_000), r("2026-03-01", "claude", "claude-opus-5", 1_000_000),
+      r("2026-03-02", "claude", "claude-opus-5", 2_000_000), r("2026-03-03", "gpt", "gpt-5.6-sol", 1_000_000),
+      r("2026-03-05", "claude", "claude-opus-5", 1_000_000), r("2027-01-01", "claude", "claude-opus-5", 9_000_000),
+    ]
+    // 2026-03-02 is a Monday.
+    let hourly = [r("2026-03-02", "claude", "claude-opus-5", 2_000_000, hour: 10), r("2026-03-05", "claude", "claude-opus-5", 1_000_000, hour: 22)]
+    let t = Date(timeIntervalSince1970: 1_772_000_000)
+    let sessions = [
+      SessionUsage(provider: "claude", session: "s", project: "shop", start: t, end: t, rows: [rows[1], rows[2]]),
+      SessionUsage(provider: "gpt", session: "g", project: "blog", start: t, end: t, rows: [rows[3]]),
+      SessionUsage(provider: "claude", session: "old", project: "old", start: t, end: t, rows: [rows[0]]),
+    ]
+    // A model without a price counts in tokens, not in cost, and is said to be left out. Two requests in one row count
+    // as two; cached tokens save at the input price minus the cache-read price (Opus 5: 5 − 0.5).
+    var unpriced = r("2026-03-05", "claude", "no-price", 1_000_000); unpriced.requests = 2
+    var cached = r("2026-03-05", "claude", "claude-opus-5", 0); cached.cached = 1_000_000
+    let mixed = wrapped(year: 2026, rows: rows + [unpriced, cached], hourly: [], sessions: [])
+    precondition(mixed.unpricedTokens == 1_000_000 && mixed.tokens == 7_000_000 && mixed.requests == 7)
+    precondition(!mixed.models.contains { $0.name == "no-price" } && mixed.cache.saved == 4.5 && mixed.models[0].count == 4)
+    let w = wrapped(year: 2026, rows: rows, hourly: hourly, sessions: sessions)
+    precondition(w.cost == 24 && w.tokens == 5_000_000 && w.requests == 4 && w.activeDays == 4 && w.firstDay == "2026-03-01")
+    precondition(w.topDay == WrappedAmount(name: "2026-03-02", cost: 10))
+    precondition(w.models.map(\.name) == ["claude-opus-5", "gpt-5.6-sol"] && w.models[0].count == 3 && w.models[0].cost == 20)
+    precondition(w.providers.first == WrappedAmount(name: "claude", cost: 20))
+    precondition(w.projects == [WrappedAmount(name: "shop", cost: 15, count: 1), WrappedAmount(name: "blog", cost: 4, count: 1)])
+    precondition(w.topSession?.session.session == "s" && w.busiestWeekday == 0 && w.busiestHour == 10)
+    precondition(w.streak == 3 && w.streakEnd == "2026-03-03")
+    // Count from leaves earlier sessions out, as it does the rows: from 3 March only the Codex session counts.
+    let later = wrapped(year: 2026, rows: rows.filter { $0.date >= "2026-03-03" }, hourly: [], sessions: sessions, countFrom: "2026-03-03")
+    precondition(later.cost == 9 && later.projects == [WrappedAmount(name: "blog", cost: 4, count: 1)])
+    precondition(later.projects.allSatisfy { $0.cost <= later.cost } && later.topSession?.session.session == "g")
+    let jan = ISO8601DateFormatter().date(from: "2027-01-03T12:00:00Z")!, dec = ISO8601DateFormatter().date(from: "2026-12-31T22:59:00Z")!
+    precondition(wrappedYear(jan) == 2026 && wrappedYear(dec) == 2026 && wrappedYear(ISO8601DateFormatter().date(from: "2027-02-01T12:00:00Z")!) == 2027)
+    let empty = wrapped(year: 2024, rows: rows, hourly: hourly, sessions: sessions)
+    precondition(empty.cost == 0 && empty.topDay == nil && empty.streak == 0 && empty.busiestHour == nil)
+    print("PASS: Wrapped year totals, top day, models, projects, busiest hour and longest streak")
+  }
   static func updateTests() throws {
     for (a, b, newer) in [
       ("1.12.0", "1.9.3", true), ("1.12.0", "1.12.0", false), ("1.12", "1.12.0", false), ("1.12.1", "1.12", true),
@@ -851,6 +929,7 @@ import Foundation
     }
     precondition(dimmedSets.count > 150)
     print("PASS: Christmas season from 1 December to 6 January, Bratislava time; garland twinkle never darkens a colour")
+    try noticeAndWrappedTests()
 
     // The collector: a Claude session with a subagent file, titles, and a Codex thread with a subagent under it.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

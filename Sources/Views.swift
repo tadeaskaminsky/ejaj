@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 import AppKit
 import ServiceManagement
+import UserNotifications
 
 // Use the property wrapper with the command-line SDK.
 typealias ViewState<Value> = SwiftUI.State<Value>
@@ -26,7 +27,82 @@ let raised = adaptive((1, 1, 1), (0.21, 0.23, 0.275))
 func providerColor(_ p: String) -> Color { p == "gpt" ? blue : orange }
 func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
 
+// macOS notifications: a new daily record, the Claude week running low, a new EJAJ. What was sent is remembered in
+// UserDefaults so nothing repeats after a restart. Only an .app bundle can post them, so a bare binary (tests,
+// renders) skips them.
+@MainActor final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+  static let shared = Notifier()
+  var open: (() -> Void)?
+  private var log: NoticeLog =
+    UserDefaults.standard.data(forKey: "noticeLog").flatMap { try? JSONDecoder().decode(NoticeLog.self, from: $0) }
+    ?? NoticeLog()
+  var sent: NoticeLog { log }
+  private var available: Bool { Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil }
+  func start() {
+    guard available else { return }
+    let center = UNUserNotificationCenter.current()
+    center.delegate = self
+    center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+  }
+  // Logged as sent only once macOS has taken it, so a notice that couldn't be shown (no permission yet, or turned off
+  // in System Settings) comes again at the next check.
+  func send(_ notice: Notice?) {
+    guard let notice, available, !pending.contains(notice.title) else { return }
+    pending.insert(notice.title)
+    let content = UNMutableNotificationContent()
+    content.title = notice.title; content.body = notice.body; content.sound = .default
+    let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+    let center = UNUserNotificationCenter.current()
+    center.getNotificationSettings { settings in
+      let allowed = [.authorized, .provisional].contains(settings.authorizationStatus)
+      guard allowed else { Task { @MainActor in Notifier.shared.pending.remove(notice.title) }; return }
+      center.add(request) { error in
+        Task { @MainActor in
+          let notifier = Notifier.shared
+          notifier.pending.remove(notice.title)
+          guard error == nil else { return }
+          notifier.log = noted(notice, in: notifier.log)
+          if let data = try? JSONEncoder().encode(notifier.log) { UserDefaults.standard.set(data, forKey: "noticeLog") }
+        }
+      }
+    }
+  }
+  private var pending = Set<String>()
+  // Shown even while EJAJ is in front; a click opens the dashboard.
+  nonisolated func userNotificationCenter(
+    _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) { completionHandler([.banner, .sound]) }
+  nonisolated func userNotificationCenter(
+    _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    Task { @MainActor in Notifier.shared.open?() }
+    completionHandler()
+  }
+}
+private let slovakTime: DateFormatter = {
+  let f = DateFormatter(); f.dateFormat = "EEE HH:mm"; f.locale = Locale(identifier: "sk_SK")
+  f.timeZone = dayFormatter.timeZone; return f
+}()
 @MainActor final class UsageStore: ObservableObject {
+  // Notifications on or off, from the gear menu.
+  @Published var notifications = UserDefaults.standard.object(forKey: "notifications") as? Bool ?? true {
+    didSet { UserDefaults.standard.set(notifications, forKey: "notifications") }
+  }
+  func notify(_ notice: Notice?) { if notifications { Notifier.shared.send(notice) } }
+  // Checks the rules after new data: today's record and the Claude week.
+  func checkNotices() {
+    var byDay: [String: Double] = [:]
+    for r in countedRows { byDay[r.date, default: 0] += r.cost ?? 0 }
+    notify(
+      recordNotice(
+        costByDay: byDay, today: dayFormatter.string(from: Date()), log: Notifier.shared.sent, money: money))
+    if let week = plan?.weekly, let reset = week.resetsAt {
+      let minute = { (d: Date) in slovakTime.string(from: Date(timeIntervalSince1970: (d.timeIntervalSince1970 / 60).rounded() * 60)) }
+      notify(weekNotice(used: week.used, resetsAt: reset, now: Date(), log: Notifier.shared.sent, time: minute))
+    }
+  }
   @Published var theme = UserDefaults.standard.string(forKey: "appearance") ?? "dark" {
     didSet { UserDefaults.standard.set(theme, forKey: "appearance"); applyTheme() }
   }
@@ -115,6 +191,7 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
       switch await Updater.check() {
       case .success(let release):
         lastUpdateSuccess = Date(); updateOffer = release
+        if let release { notify(updateNotice(version: release.version, log: Notifier.shared.sent)) }
         updateStatus = force && release == nil ? .upToDate : .idle
       case .failure(let e):
         // Background failures stay quiet; only an asked-for check says what went wrong.
@@ -150,7 +227,8 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
       await MainActor.run { [weak self] in
         guard let self else { return }; self.planBusy = false
         switch result {
-        case .success(let limits): self.plan = limits; self.planState = .ok; self.planFetched = Date()
+        case .success(let limits):
+          self.plan = limits; self.planState = .ok; self.planFetched = Date(); self.checkNotices()
         case .failure(let state):
           self.planState = state
           // A network or server error keeps the last numbers; a lost login or a non-subscription account clears them.
@@ -213,7 +291,7 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
         } else {
           self.error = "No local usage logs found. Showing the last saved history."
         }
-        self.lastRefresh = Date(); self.onChange?()
+        self.lastRefresh = Date(); self.onChange?(); self.checkNotices()
       }
     }
   }
@@ -1145,6 +1223,7 @@ func unpricedNote(_ rows: [UsageRow]) -> String? {
 struct Dashboard: View {
   @ObservedObject var store: UsageStore
   @ViewState var costMode = false
+  @ViewState var showWrapped = false
   // The last tab is remembered; 1.11 called the Projects tab Analytics.
   @ViewState var tab: String = {
     let saved = UserDefaults.standard.string(forKey: "tab") ?? ""
@@ -1233,6 +1312,7 @@ struct Dashboard: View {
       }.padding(28).frame(maxWidth: .infinity)
     }.background(canvas)
       .foregroundStyle(ink).preferredColorScheme(store.colorScheme).frame(minWidth: 880, minHeight: 560)
+      .sheet(isPresented: $showWrapped) { WrappedView(store: store) { showWrapped = false } }
   }
   // Currency, appearance, Count from, login item and prices. The chip is drawn around the menu, because a
   // borderless menu button ignores a styled label.
@@ -1262,7 +1342,9 @@ struct Dashboard: View {
         }.pickerStyle(.inline)
       }
       Toggle("Launch at login", isOn: $store.launchAtLogin)
+      Toggle("Notifications", isOn: $store.notifications)
       Divider()
+      Button("EJAJ Wrapped \(String(WrappedView.year))…") { showWrapped = true }
       Button("Edit prices (pricing.json)…") { store.editPricing() }
       Button("Check for updates") { store.checkForUpdate(force: true) }
     } label: {
@@ -1272,6 +1354,26 @@ struct Dashboard: View {
       .help("Currency, appearance, Count from, login item, prices")
   }
   @ViewBuilder private func overview(rows: [UsageRow], both: Bool) -> some View {
+        // In the Christmas season the year's Wrapped waits at the top.
+        if store.festive {
+          Button {
+            showWrapped = true
+          } label: {
+            HStack(spacing: 12) {
+              Image(systemName: "gift.fill").font(.system(size: 18)).foregroundStyle(Xmas.gold)
+              VStack(alignment: .leading, spacing: 2) {
+                Text("EJAJ Wrapped \(String(WrappedView.year)) is here").font(.system(size: 14, weight: .semibold))
+                Text("Your year with Claude and Codex, one number at a time").font(.system(size: 12)).opacity(0.8)
+              }
+              Spacer()
+              Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+            }.foregroundStyle(.white).padding(.horizontal, 18).padding(.vertical, 14)
+              .background(
+                LinearGradient(colors: [Xmas.red.opacity(0.9), Color(red: 0.07, green: 0.32, blue: 0.20)], startPoint: .leading, endPoint: .trailing),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+              ).contentShape(Rectangle())
+          }.buttonStyle(.plain)
+        }
           let split = breakdown(rows), cost = store.cost(rows)
           HStack(spacing: 16) {
             Total(
@@ -2069,5 +2171,222 @@ struct PatternsView: View {
         Spacer()
       }
     }.font(.system(size: 11)).lineLimit(1).frame(height: 18)
+  }
+}
+// EJAJ Wrapped: the year in pages, one number at a time, ending on a card to share.
+struct WrappedView: View {
+  @ObservedObject var store: UsageStore
+  var close: () -> Void
+  @ViewState var page = 0
+  @ViewState private var shared: String?
+  static var year: Int { wrappedYear(Date()) }
+  var data: Wrapped {
+    wrapped(
+      year: WrappedView.year, rows: store.countedRows, hourly: counted(store.dataset?.hourly ?? [], from: store.countFrom),
+      sessions: store.dataset?.sessions ?? [], countFrom: store.countFrom)
+  }
+  static let tints: [Color] = [
+    Color(red: 0.55, green: 0.09, blue: 0.13), Color(red: 0.07, green: 0.32, blue: 0.20),
+    Color(red: 0.10, green: 0.19, blue: 0.42), Color(red: 0.47, green: 0.32, blue: 0.06),
+    Color(red: 0.30, green: 0.13, blue: 0.42), Color(red: 0.55, green: 0.09, blue: 0.13),
+    Color(red: 0.07, green: 0.32, blue: 0.20), Color(red: 0.10, green: 0.19, blue: 0.42),
+    Color(red: 0.12, green: 0.14, blue: 0.18),
+  ]
+  var body: some View {
+    let w = data, last = WrappedView.tints.count - 1
+    VStack(spacing: 0) {
+      ZStack(alignment: .top) {
+        LinearGradient(
+          colors: [WrappedView.tints[page], WrappedView.tints[page].opacity(0.55)], startPoint: .topLeading,
+          endPoint: .bottomTrailing
+        ).background(Color.black)
+        Garland().allowsHitTesting(false)
+        WrappedPage(w: w, page: page, money: store.money).padding(.horizontal, 44).padding(.top, 54).padding(.bottom, 24)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).id(page)
+          .transition(.opacity)
+      }.foregroundStyle(.white).environment(\.colorScheme, .dark)
+      HStack(spacing: 10) {
+        Button("Close", action: close).keyboardShortcut(.cancelAction)
+        Spacer()
+        HStack(spacing: 6) {
+          ForEach(0...last, id: \.self) { i in
+            Circle().fill(i == page ? ink : muted.opacity(0.35)).frame(width: 6, height: 6)
+          }
+        }
+        Spacer()
+        if page == last {
+          if let shared { Text(shared).font(.system(size: 11)).foregroundStyle(muted) }
+          Button("Copy image") { shared = WrappedView.copy(w, store) ? "Copied" : "Couldn't make the image" }
+          Button("Save image…") { shared = WrappedView.save(w, store) }
+        }
+        Button {
+          withAnimation(.easeOut(duration: 0.2)) { page = max(0, page - 1) }
+        } label: {
+          Image(systemName: "chevron.left")
+        }.disabled(page == 0).keyboardShortcut(.leftArrow, modifiers: [])
+        Button {
+          withAnimation(.easeOut(duration: 0.2)) { page = min(last, page + 1) }
+        } label: {
+          Image(systemName: "chevron.right")
+        }.disabled(page == last).keyboardShortcut(.rightArrow, modifiers: [])
+      }.padding(.horizontal, 16).padding(.vertical, 12).background(canvas)
+    }.frame(width: 680, height: 560)
+  }
+  @MainActor static func image(_ w: Wrapped, _ store: UsageStore) -> NSImage? {
+    let renderer = ImageRenderer(content: WrappedCard(w: w, money: store.money))
+    renderer.scale = 2
+    return renderer.nsImage
+  }
+  @MainActor static func copy(_ w: Wrapped, _ store: UsageStore) -> Bool {
+    guard let image = image(w, store) else { return false }
+    NSPasteboard.general.clearContents(); return NSPasteboard.general.writeObjects([image])
+  }
+  // What happened, for the line next to the buttons; nil when the save was cancelled.
+  @MainActor static func save(_ w: Wrapped, _ store: UsageStore) -> String? {
+    guard let image = image(w, store), let tiff = image.tiffRepresentation,
+      let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+    else { return "Couldn't make the image" }
+    let panel = NSSavePanel(); panel.nameFieldStringValue = "EJAJ-Wrapped-\(w.year).png"
+    panel.allowedContentTypes = [.png]
+    guard panel.runModal() == .OK, let url = panel.url else { return nil }
+    do { try png.write(to: url); return "Saved" } catch { return "Couldn't save: " + error.localizedDescription }
+  }
+}
+private let wrappedDay: DateFormatter = {
+  let f = DateFormatter(); f.dateFormat = "EEEE d MMMM"; f.locale = Locale(identifier: "en_US")
+  f.timeZone = dayFormatter.timeZone; return f
+}()
+private let weekdayNames = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
+func wrappedDayText(_ day: String) -> String { dayFormatter.date(from: day).map(wrappedDay.string) ?? day }
+// One page of Wrapped: a small line, one big figure, and what it means.
+struct WrappedPage: View {
+  var w: Wrapped; var page: Int; var money: (Double) -> String
+  private func lead(_ t: String) -> some View { Text(t).font(.system(size: 18, weight: .semibold)).opacity(0.85) }
+  private func big(_ t: String) -> some View {
+    Text(t).font(.system(size: 76, weight: .heavy, design: .rounded)).tracking(-2).lineLimit(1).minimumScaleFactor(0.4)
+  }
+  private func note(_ t: String) -> some View {
+    Text(t).font(.system(size: 17, weight: .medium)).opacity(0.85).fixedSize(horizontal: false, vertical: true)
+  }
+  private func bars(_ items: [WrappedAmount], label: @escaping (String) -> String) -> some View {
+    let top = items.first?.cost ?? 0
+    return VStack(alignment: .leading, spacing: 10) {
+      ForEach(Array(items.prefix(5).enumerated()), id: \.offset) { _, item in
+        HStack(spacing: 12) {
+          Text(label(item.name)).font(.system(size: 15, weight: .semibold)).lineLimit(1).frame(width: 170, alignment: .leading)
+          GeometryReader { g in
+            Capsule().fill(.white.opacity(0.85)).frame(width: max(4, g.size.width * (top > 0 ? item.cost / top : 0)), height: 8)
+              .frame(maxHeight: .infinity)
+          }.frame(height: 16)
+          Text(money(item.cost)).font(.system(size: 15, weight: .medium).monospacedDigit()).frame(width: 110, alignment: .trailing)
+        }
+      }
+    }
+  }
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      switch page {
+      case 0:
+        Text("EJAJ Wrapped").font(.system(size: 22, weight: .bold)).opacity(0.9)
+        Text(String(w.year)).font(.system(size: 150, weight: .black, design: .rounded)).tracking(-6)
+        note(w.activeDays > 0 ? "Your year with Claude and Codex, in numbers. Use → to go on." : "No usage this year yet.")
+      case 1:
+        lead("This year you spent")
+        big(money(w.cost))
+        note(
+          "on \(compact(w.tokens)) tokens in \(exact(w.requests)) requests, over \(w.activeDays) days of use"
+            + (w.activeDays > 0 ? ". That's \(money(w.cost / Double(w.activeDays))) on a day you worked." : "."))
+        if w.unpricedTokens > 0 {
+          Text("Leaves out \(compact(w.unpricedTokens)) tokens of models without a price.").font(.system(size: 13)).opacity(0.7)
+        }
+        if w.providers.count > 1 {
+          HStack(spacing: 18) {
+            ForEach(w.providers, id: \.name) { p in
+              HStack(spacing: 6) { Circle().fill(providerColor(p.name)).frame(width: 9, height: 9); Text(providerName(p.name) + " " + money(p.cost)) }
+            }
+          }.font(.system(size: 15, weight: .semibold)).padding(.top, 6)
+        }
+      case 2:
+        lead("The prompt cache saved you")
+        big(money(w.cache.net))
+        note(
+          "Without it the bill would have been \(money(w.cost + w.cache.net))"
+            + (w.cost + w.cache.net > 0 ? ", so it took \(percent(w.cache.net / (w.cost + w.cache.net))) off." : "."))
+      case 3:
+        lead("Your biggest day")
+        big(w.topDay.map { wrappedDayText($0.name) } ?? "–")
+        note(w.topDay.map { money($0.cost) + " in a single day." } ?? "")
+      case 4:
+        lead("Where it went")
+        big(w.projects.first?.name ?? "–")
+        note(
+          w.projects.first.map { "\(money($0.cost)) in \(sessionCount($0.count)), the most of your \(w.projects.count) projects." } ?? "")
+        bars(w.projects) { $0 }.padding(.top, 10)
+      case 5:
+        lead("Your most expensive session")
+        Text(w.topSession.map { sessionTitle($0.session) } ?? "–").font(.system(size: 40, weight: .heavy, design: .rounded))
+          .lineLimit(3).minimumScaleFactor(0.5)
+        note(
+          w.topSession.map {
+            money($0.cost) + " in " + $0.session.project + ", started " + Stamp.short.string(from: $0.session.start) + "."
+          } ?? "")
+      case 6:
+        lead("Your model of the year")
+        big(w.models.first.map { modelName($0.name) } ?? "–")
+        note(w.models.first.map { "\(percent($0.cost / max(w.cost, 0.0001))) of the bill, in \(exact($0.count)) requests." } ?? "")
+        bars(w.models) { modelName($0) }.padding(.top, 10)
+      case 7:
+        lead("You work hardest on")
+        big(w.busiestWeekday.map { weekdayNames[$0] } ?? "–")
+        note(
+          (w.busiestHour.map { "Around \(hourLabel($0)) most of all. " } ?? "")
+            + (w.streak > 1
+              ? "Your longest streak: \(w.streak) days in a row, up to \(w.streakEnd.map(wrappedDayText) ?? "")." : ""))
+      default:
+        WrappedCard(w: w, money: money).frame(maxWidth: .infinity, alignment: .center)
+      }
+    }
+  }
+}
+// The card to share: the year's numbers on one image.
+struct WrappedCard: View {
+  var w: Wrapped; var money: (Double) -> String
+  private func cell(_ label: String, _ value: String) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text(label).font(.system(size: 12, weight: .medium)).opacity(0.7)
+      Text(value).font(.system(size: 20, weight: .bold, design: .rounded)).lineLimit(1).minimumScaleFactor(0.5)
+    }.frame(maxWidth: .infinity, alignment: .leading)
+  }
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      HStack {
+        Text("EJAJ Wrapped \(String(w.year))").font(.system(size: 16, weight: .bold))
+        Spacer()
+        Image(systemName: "waveform.path").font(.system(size: 14, weight: .bold)).foregroundStyle(blue)
+      }
+      Text(money(w.cost)).font(.system(size: 54, weight: .heavy, design: .rounded)).tracking(-1)
+      Text(
+        "spent on \(compact(w.tokens)) tokens over \(w.activeDays) days"
+          + (w.unpricedTokens > 0 ? ", not counting \(compact(w.unpricedTokens)) without a price" : "")
+      ).font(.system(size: 14)).opacity(0.75)
+        .padding(.top, -10)
+      Grid(horizontalSpacing: 18, verticalSpacing: 14) {
+        GridRow {
+          cell("Cache saved", money(w.cache.net))
+          cell("Biggest day", w.topDay.map { money($0.cost) } ?? "–")
+          cell("Longest streak", w.streak > 0 ? "\(w.streak) days" : "–")
+        }
+        GridRow {
+          cell("Top project", w.projects.first?.name ?? "–")
+          cell("Top model", w.models.first.map { modelName($0.name) } ?? "–")
+          cell("Busiest", w.busiestWeekday.map { String(weekdayNames[$0].dropLast()) } ?? "–")
+        }
+      }
+    }.padding(26).frame(width: 560).foregroundStyle(.white)
+      .background(
+        LinearGradient(
+          colors: [Color(red: 0.55, green: 0.09, blue: 0.13), Color(red: 0.07, green: 0.30, blue: 0.20)],
+          startPoint: .topLeading, endPoint: .bottomTrailing),
+        in: RoundedRectangle(cornerRadius: 22, style: .continuous))
   }
 }
