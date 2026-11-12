@@ -12,7 +12,9 @@ Requires an Apple Silicon Mac with macOS 13 or later.
 
 ### 1. Build and install
 
-You need the Xcode command line tools (`xcode-select --install`). No Xcode project is involved.
+The quickest way is the zip from the [latest release](https://github.com/tadeaskaminsky/ejaj/releases/latest): unzip it, move `EJAJ.app` to `/Applications` (or any folder you can write to) and open it. The app is signed ad hoc, not notarized, so macOS blocks it the first time. Allow it with Open Anyway in System Settings > Privacy & Security. Later versions install from inside the app (see Updating), without that step.
+
+To build it yourself you need the Xcode command line tools (`xcode-select --install`). No Xcode project is involved.
 
 ```bash
 git clone https://github.com/tadeaskaminsky/ejaj.git
@@ -133,7 +135,11 @@ The Archive button runs `~/projects/token-archive/archive.py`, a separate script
 
 ### 8. Updating
 
-Pull and package again. To replace the copy you run and restart it in one step:
+EJAJ checks the GitHub releases when it starts and every 6 hours. When there is a newer version, an **Update** button appears next to Refresh. Click it to see what changed, then **Install and restart**. EJAJ downloads the release, checks it against the SHA-256 checksum GitHub lists for the file and that it really is EJAJ of that version with an intact signature, replaces itself and opens again. Your settings and history stay. If the replacement fails, the old version stays and the dashboard says why when it opens. **Check for updates** in the gear menu checks right away.
+
+The app has to sit in a folder you can write to, such as `/Applications` on an admin account. If it runs straight from Downloads, macOS may run it from a read-only copy, and the update says so; move it to `/Applications` first.
+
+If you build from source, pull and package again. To replace the copy you run and restart it in one step:
 
 ```bash
 git pull

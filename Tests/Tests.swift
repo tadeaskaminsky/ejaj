@@ -657,6 +657,90 @@ import Foundation
     }
     print("PASS: Claude Code credentials, refresh merge keeps other keys")
     try sessionTests()
+    try updateTests()
+  }
+  static func updateTests() throws {
+    for (a, b, newer) in [
+      ("1.12.0", "1.9.3", true), ("1.12.0", "1.12.0", false), ("1.12", "1.12.0", false), ("1.12.1", "1.12", true),
+      ("2.0.0", "1.99.9", true), ("1.12.0", "1.12", false), ("1.8.1", "1.12.0", false), ("1.12.0-beta", "1.0", false), ("v1.2", "1.0", false),
+    ] { precondition(isNewer(a, than: b) == newer, "\(a) vs \(b)") }
+    precondition(versionParts("1..2") == nil && versionParts("") == nil && versionParts("1.2.3.4.5") == nil)
+    let digest = String(repeating: "ab", count: 32)
+    func release(_ extra: [String: Any] = [:], asset: [String: Any]? = nil) -> Data {
+      var r: [String: Any] = [
+        "tag_name": "v1.13.0", "draft": false, "prerelease": false, "body": "**New** tab",
+        "html_url": "https://github.com/tadeaskaminsky/ejaj/releases/tag/v1.13.0",
+        "assets": [
+          ["name": "notes.txt", "browser_download_url": "https://example.com/notes.txt"],
+          asset ?? [
+            "name": "EJAJ-macOS.zip", "digest": "sha256:" + digest.uppercased(),
+            "browser_download_url": "https://github.com/tadeaskaminsky/ejaj/releases/download/v1.13.0/EJAJ-macOS.zip",
+          ],
+        ],
+      ]
+      for (k, v) in extra { r[k] = v }
+      return try! JSONSerialization.data(withJSONObject: r)
+    }
+    let r = parseLatestRelease(release())!
+    precondition(r.version == "1.13.0" && r.sha256 == digest && r.notes == "**New** tab")
+    precondition(r.zip.lastPathComponent == "EJAJ-macOS.zip" && r.page?.host == "github.com")
+    precondition(parseLatestRelease(release(["draft": true])) == nil)
+    precondition(parseLatestRelease(release(["prerelease": true])) == nil)
+    precondition(parseLatestRelease(release(["tag_name": "nightly"])) == nil)
+    precondition(parseLatestRelease(release(asset: ["name": "Other.zip", "browser_download_url": "https://x.y/z"])) == nil)
+    // Plain http only from this Mac; a malformed digest refuses the release; no digest is allowed (older releases).
+    let httpAsset: [String: Any] = ["name": "EJAJ-macOS.zip", "browser_download_url": "http://example.com/EJAJ-macOS.zip"]
+    precondition(parseLatestRelease(release(asset: httpAsset)) == nil)
+    let local: [String: Any] = ["name": "EJAJ-macOS.zip", "browser_download_url": "http://127.0.0.1:8765/EJAJ-macOS.zip"]
+    let localRelease = parseLatestRelease(release(asset: local))
+    precondition(localRelease != nil && localRelease?.sha256 == nil)
+    precondition(isLocalTestURL(URL(string: "http://localhost:8765/x")!) && !isLocalTestURL(URL(string: "http://localhost@evil.com/x")!))
+    for bad in ["sha256:" + String(repeating: "a", count: 63), "sha256:" + String(repeating: "g", count: 64)] {
+      var asset = local; asset["digest"] = bad
+      precondition(parseLatestRelease(release(asset: asset)) == nil, bad)
+    }
+    let badDigest: [String: Any] = [
+      "name": "EJAJ-macOS.zip", "digest": "sha256:xyz", "browser_download_url": "https://x.y/EJAJ-macOS.zip",
+    ]
+    precondition(parseLatestRelease(release(asset: badDigest)) == nil && parseLatestRelease(Data("[]".utf8)) == nil)
+    precondition(sha256Hex(Data("abc".utf8)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    // The swap: waits for the old process, replaces the bundle, removes the leftovers and opens the new one.
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let app = root.appendingPathComponent("Apps/EJAJ.app"), work = root.appendingPathComponent("work")
+    let new = work.appendingPathComponent("unpacked/EJAJ.app"), old = root.appendingPathComponent("Apps/.EJAJ.app.old")
+    let opened = root.appendingPathComponent("opened"), note = root.appendingPathComponent("update-failed.txt")
+    for (dir, text) in [(app, "1.12.0"), (new, "1.13.0")] {
+      try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      try text.write(to: dir.appendingPathComponent("version"), atomically: true, encoding: .utf8)
+    }
+    // The old process is still running for a second; the swap has to wait for it.
+    let running = Process(); running.executableURL = URL(fileURLWithPath: "/bin/sleep"); running.arguments = ["1"]
+    try running.run()
+    func swap(_ opener: String) {
+      let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+      p.arguments = [
+        "-c", swapScript, "t", String(running.processIdentifier), app.path, new.path, old.path, work.path, note.path,
+        "1.13.0", opener,
+      ]
+      p.standardError = FileHandle.nullDevice
+      try! p.run(); p.waitUntilExit()
+    }
+    let started = Date()
+    swap("touch \(opened.path)")
+    precondition(Date().timeIntervalSince(started) > 0.7, "the swap didn't wait for the old process")
+    running.waitUntilExit()
+    precondition((try? String(contentsOf: app.appendingPathComponent("version"), encoding: .utf8)) == "1.13.0")
+    precondition(!FileManager.default.fileExists(atPath: old.path) && !FileManager.default.fileExists(atPath: work.path))
+    precondition(FileManager.default.fileExists(atPath: opened.path) && Updater.takeFailureNote(note) == nil)
+    // A copy that fails puts the old bundle back and leaves a note for the next launch, read once.
+    try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+    swap(":")
+    precondition((try? String(contentsOf: app.appendingPathComponent("version"), encoding: .utf8)) == "1.13.0")
+    precondition(!FileManager.default.fileExists(atPath: work.path))
+    precondition(Updater.takeFailureNote(note)?.hasPrefix("EJAJ 1.13.0 couldn't be installed") == true)
+    precondition(Updater.takeFailureNote(note) == nil)
+    print("PASS: release parsing, version order, checksums, swapping the bundle and putting it back on failure")
   }
   static func sessionTests() throws {
     let home = "/Users/me", repos: Set<String> = ["/Users/me/work/shop", "/Users/me/work/shop/.claude/worktrees/x"]

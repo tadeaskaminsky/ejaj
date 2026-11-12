@@ -90,6 +90,45 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
       } catch {}
     }
   }
+  // A newer EJAJ on GitHub, checked at launch and every 6 hours, or from the gear menu. The offer and the status
+  // line are kept apart, so an offer survives a failed install or a check that couldn't reach GitHub.
+  enum UpdateStatus: Equatable { case idle, checking, upToDate, installing, failed(String) }
+  @Published var updateOffer: ReleaseInfo?
+  @Published var updateStatus = UpdateStatus.idle
+  private var lastUpdateSuccess = Date.distantPast, lastUpdateAttempt = Date.distantPast
+  func checkForUpdate(force: Bool = false) {
+    guard updateStatus != .checking, updateStatus != .installing else { return }
+    let now = Date()
+    // A check that worked holds for 6 hours. One that didn't (offline at login, say) is tried again in 15 minutes.
+    guard force || (now.timeIntervalSince(lastUpdateSuccess) > 21600 && now.timeIntervalSince(lastUpdateAttempt) > 900)
+    else { return }
+    lastUpdateAttempt = now
+    if force { updateStatus = .checking }
+    Task {
+      switch await Updater.check() {
+      case .success(let release):
+        lastUpdateSuccess = Date(); updateOffer = release
+        updateStatus = force && release == nil ? .upToDate : .idle
+      case .failure(let e):
+        // Background failures stay quiet; only an asked-for check says what went wrong.
+        if force { updateStatus = .failed(e.message) }
+      }
+    }
+  }
+  // Downloads and checks the update, then quits; the new version opens by itself.
+  func installUpdate() {
+    guard let release = updateOffer else { return }
+    updateStatus = .installing
+    Task {
+      do {
+        try await Updater.install(release)
+        NSApp.terminate(nil)
+      } catch {
+        updateStatus = .failed(
+          ((error as? UpdateError)?.message ?? error.localizedDescription) + ". The Update button tries again.")
+      }
+    }
+  }
   // Claude plan limits (5-hour and weekly), read every 5 minutes. A failed read keeps the last numbers.
   @Published var plan: PlanLimits?
   @Published var planState = PlanState.loading
@@ -142,6 +181,7 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
     if let d = try? Data(contentsOf: cacheURL), let value = try? JSONDecoder().decode(Dataset.self, from: d) {
       dataset = value
     }
+    if let note = Updater.takeFailureNote() { updateStatus = .failed(note) }
   }
   func start() {
     refresh();
@@ -150,7 +190,7 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
     }
   }
   func refresh() {
-    refreshExchange(); refreshPlan()
+    refreshExchange(); refreshPlan(); checkForUpdate()
     guard !busy else { return }; busy = true; error = nil
     Pricing.load()
     let collector = self.collector
@@ -305,6 +345,41 @@ struct Chip<Label: View>: View {
           .fill(pressed ? raised : ink.opacity(hovered && enabled ? 0.1 : 0.055)))
       .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(ink.opacity(0.07)))
       .contentShape(RoundedRectangle(cornerRadius: 9)).onHover { hovered = $0 }
+  }
+}
+// Shown in the header when GitHub has a newer EJAJ. A click shows what changed and installs it.
+struct UpdateChip: View {
+  @ObservedObject var store: UsageStore
+  var release: ReleaseInfo
+  @ViewState private var open = false
+  var body: some View {
+    Button {
+      open = true
+    } label: {
+      Label("Update", systemImage: "arrow.down.circle.fill").foregroundStyle(blue)
+    }.buttonStyle(ChipStyle()).help("EJAJ \(release.version) is on GitHub")
+      .popover(isPresented: $open, arrowEdge: .bottom) {
+        VStack(alignment: .leading, spacing: 12) {
+          Text("EJAJ \(release.version)").font(.system(size: 15, weight: .semibold))
+          Text("You have \(Updater.currentVersion). Installing quits EJAJ, replaces it and opens the new version.")
+            .font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+          if !release.notes.isEmpty {
+            ScrollView {
+              Text(
+                (try? AttributedString(
+                  markdown: release.notes,
+                  options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(release.notes)
+              ).font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            }.frame(maxHeight: 220)
+          }
+          HStack {
+            if let page = release.page { Link("View on GitHub", destination: page).font(.system(size: 12)) }
+            Spacer()
+            Button("Later") { open = false }
+            Button("Install and restart") { open = false; store.installUpdate() }.keyboardShortcut(.defaultAction)
+          }
+        }.padding(16).frame(width: 380)
+      }
   }
 }
 // The app's mark next to the tabs: the menu-bar waveform on the icon's dark tile.
@@ -1000,9 +1075,15 @@ struct Dashboard: View {
       VStack(alignment: .leading, spacing: 16) {
         HStack(spacing: 18) {
           Wordmark()
-          PillPicker(selection: $tab, options: Dashboard.tabs, size: 13)
+          PillPicker(selection: $tab, options: Dashboard.tabs, size: 13).fixedSize()
           Spacer()
           HStack(spacing: 8) {
+            if store.updateStatus == .installing {
+              Label("Updating…", systemImage: "arrow.down.circle").font(.system(size: 12, weight: .medium))
+                .foregroundStyle(muted)
+            } else if let release = store.updateOffer {
+              UpdateChip(store: store, release: release)
+            }
             Button {
               store.refresh()
             } label: {
@@ -1034,6 +1115,13 @@ struct Dashboard: View {
           }
         }.frame(height: 32)
         if let error = store.error { Text(error).font(.system(size: 11)).foregroundStyle(orange) }
+        switch store.updateStatus {
+        case .checking: Text("Checking GitHub for a newer EJAJ…").font(.system(size: 11)).foregroundStyle(muted)
+        case .upToDate:
+          Text("EJAJ \(Updater.currentVersion) is the latest version.").font(.system(size: 11)).foregroundStyle(muted)
+        case .failed(let message): Text("Update: " + message).font(.system(size: 11)).foregroundStyle(orange)
+        default: EmptyView()
+        }
         if let r = store.archiveResult {
           Text(r.text).font(.system(size: 11)).foregroundStyle(r.failed ? orange : muted).lineLimit(2).textSelection(
             .enabled)
@@ -1082,6 +1170,7 @@ struct Dashboard: View {
       Toggle("Launch at login", isOn: $store.launchAtLogin)
       Divider()
       Button("Edit prices (pricing.json)…") { store.editPricing() }
+      Button("Check for updates") { store.checkForUpdate(force: true) }
     } label: {
       Image(systemName: "gearshape")
     }.menuStyle(.borderlessButton).menuIndicator(.hidden).foregroundStyle(ink)

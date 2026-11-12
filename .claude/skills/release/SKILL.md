@@ -28,4 +28,13 @@ description: Ship a new EJAJ version. Bumps the version in Resources/Info.plist,
 
 6. **Commit** the source change, the plist, the changelog and the readme together. The message title names the change and ends with the version in brackets, for example `Compare the calendar week with the average week (1.8.1)`. Commits are GPG-signed through the user's global git config. Don't turn signing off. If gpg asks for the YubiKey PIN, let the user enter it.
 
+7. **Publish on GitHub.** Other people update from inside the app, and it only sees GitHub releases, so a version isn't out for them until it is published. Publishing pushes `main` and creates a public release, so ask the user first, every time.
+
+   ```bash
+   git push origin main
+   scripts/publish.sh "Short title of the change"
+   ```
+
+   `scripts/publish.sh` refuses a dirty tree or an unpushed `main`, packages again from that clean HEAD, tags `v<version>` and attaches the zip, with that version's CHANGELOG entry as the notes. Check with `gh release view v<version>` that the zip is attached; GitHub adds its SHA-256 digest, which the app's updater checks.
+
 The signature is ad hoc (`codesign --sign -`). The app is for this Mac and isn't notarized.

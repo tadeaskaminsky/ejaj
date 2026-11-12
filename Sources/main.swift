@@ -179,6 +179,30 @@ if CommandLine.arguments.contains("--snapshot") {
   } else {
     FileHandle.standardOutput.write(data)
   }
+} else if CommandLine.arguments.contains("--self-update") {
+  // The update the dashboard offers, without the window: checks GitHub (or EJAJ_UPDATE_FEED) and installs a newer
+  // release over this bundle. The swap starts once this process has exited.
+  // The swap waits for this process only, so a dashboard running from the same bundle would be swapped under it.
+  let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+    .filter { $0.processIdentifier != getpid() && $0.bundleURL?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL }
+  if !others.isEmpty { print("Quit the running EJAJ first: it runs from this bundle"); exit(1) }
+  let done = DispatchSemaphore(value: 0)
+  nonisolated(unsafe) var status: Int32 = 1
+  Task.detached {
+    switch await Updater.check() {
+    case .success(let release?):
+      do {
+        try await Updater.install(release); print("installing EJAJ \(release.version)"); status = 0
+      } catch {
+        print((error as? UpdateError)?.message ?? error.localizedDescription)
+      }
+    case .success(nil): print("EJAJ \(Updater.currentVersion) is the latest version"); status = 0
+    case .failure(let e): print(e.message)
+    }
+    done.signal()
+  }
+  done.wait()
+  exit(status)
 } else if let i = CommandLine.arguments.firstIndex(of: "--icon"), CommandLine.arguments.count > i + 1 {
   makeIcon(CommandLine.arguments[i + 1])
 } else {
