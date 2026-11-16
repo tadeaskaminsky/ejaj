@@ -120,6 +120,38 @@ private let slovakTime: DateFormatter = {
   @Published var currency = UserDefaults.standard.string(forKey: "currency") == "USD" ? "USD" : "EUR" {
     didSet { UserDefaults.standard.set(currency, forKey: "currency"); onChange?() }
   }
+  // Extra folders with Claude session logs, from the gear menu: for apps that run Claude with their own config
+  // folder instead of ~/.claude. A change rescans right away.
+  @Published var sessionFolders = UserDefaults.standard.stringArray(forKey: "sessionFolders") ?? [] {
+    didSet { UserDefaults.standard.set(sessionFolders, forKey: "sessionFolders"); rescan() }
+  }
+  func addSessionFolder() {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+    // Config folders such as ~/.claude are hidden.
+    panel.showsHiddenFiles = true
+    panel.message =
+      "Choose the folder where the app keeps its Claude sessions (the one with projects inside, or projects itself)."
+    panel.prompt = "Add"
+    NSApp.activate(ignoringOtherApps: true)
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    let path = url.standardizedFileURL.path
+    if tooBroadForSessions(path, home: FileManager.default.homeDirectoryForCurrentUser.path) {
+      error = "\(Self.tilde(path)) is too big to read every 30 seconds. Pick the folder the app keeps its sessions in."
+      return
+    }
+    if !sessionFolders.contains(path) { sessionFolders.append(path) }
+  }
+  static func tilde(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
+  // What the last scan found in an added session folder, for the gear menu. nil before the first scan with it.
+  func folderStatus(_ path: String) -> String? {
+    guard let logs = dataset?.folderLogs else { return nil }
+    guard let count = logs[path] else { return "folder not found" }
+    return count == 0 ? "no Claude logs" : "\(count) log\(count == 1 ? "" : "s")"
+  }
+  // A refresh that is already scanning would miss the change, so it scans once more when it ends.
+  private var rescanPending = false
+  private func rescan() { if busy { rescanPending = true } else { refresh() } }
   // Registered with launchd through SMAppService; macOS lists it under Login Items.
   @Published var launchAtLogin = SMAppService.mainApp.status == .enabled {
     didSet {
@@ -278,11 +310,17 @@ private let slovakTime: DateFormatter = {
     refreshExchange(); refreshPlan(); checkForUpdate()
     guard !busy else { return }; busy = true; error = nil
     Pricing.load()
-    let collector = self.collector
+    let collector = self.collector, folders = sessionFolders
     collectionQueue.async { [weak self] in
-      let value = collector.collect()
+      let value = collector.collect(claudeFolders: folders)
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }; self.busy = false
+        // A session folder that gives nothing would look the same as one that works, so it is named.
+        if let empty = folders.first(where: { (value.folderLogs?[$0] ?? 0) == 0 }) {
+          self.error = value.folderLogs?[empty] == nil
+            ? "Session folder \(Self.tilde(empty)) doesn't exist (any more)."
+            : "Session folder \(Self.tilde(empty)) has no Claude session logs."
+        }
         if value.unreadable > 0 { self.error = "Some local files could not be read (\(value.unreadable))." }
         if let e = Pricing.fileError { self.error = e }
         if !value.rows.isEmpty || self.dataset == nil {
@@ -292,6 +330,7 @@ private let slovakTime: DateFormatter = {
           self.error = "No local usage logs found. Showing the last saved history."
         }
         self.lastRefresh = Date(); self.onChange?(); self.checkNotices()
+        if self.rescanPending { self.rescanPending = false; self.refresh() }
       }
     }
   }
@@ -1314,8 +1353,8 @@ struct Dashboard: View {
       .foregroundStyle(ink).preferredColorScheme(store.colorScheme).frame(minWidth: 880, minHeight: 560)
       .sheet(isPresented: $showWrapped) { WrappedView(store: store) { showWrapped = false } }
   }
-  // Currency, appearance, Count from, login item and prices. The chip is drawn around the menu, because a
-  // borderless menu button ignores a styled label.
+  // Currency, appearance, Count from, session folders, login item and prices. The chip is drawn around the menu,
+  // because a borderless menu button ignores a styled label.
   private var settingsMenu: some View {
     Menu {
       Picker("Currency", selection: $store.currency) {
@@ -1341,6 +1380,15 @@ struct Dashboard: View {
           }
         }.pickerStyle(.inline)
       }
+      Menu("Session folders") {
+        ForEach(store.sessionFolders, id: \.self) { path in
+          Button("Remove " + UsageStore.tilde(path) + (store.folderStatus(path).map { " (\($0))" } ?? "")) {
+            store.sessionFolders.removeAll { $0 == path }
+          }
+        }
+        if !store.sessionFolders.isEmpty { Divider() }
+        Button("Add folder…") { store.addSessionFolder() }
+      }
       Toggle("Launch at login", isOn: $store.launchAtLogin)
       Toggle("Notifications", isOn: $store.notifications)
       Divider()
@@ -1351,7 +1399,7 @@ struct Dashboard: View {
       Image(systemName: "gearshape")
     }.menuStyle(.borderlessButton).menuIndicator(.hidden).foregroundStyle(ink)
       .frame(width: 30, height: 30).contentShape(Rectangle()).background(Chip { Color.clear.frame(width: 12, height: 12) }.allowsHitTesting(false))
-      .help("Currency, appearance, Count from, login item, prices")
+      .help("Currency, appearance, Count from, session folders, login item, prices")
   }
   @ViewBuilder private func overview(rows: [UsageRow], both: Bool) -> some View {
         // In the Christmas season the year's Wrapped waits at the top.

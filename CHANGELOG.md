@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.16.0 (2026-11-16)
+
+- **Session folders** in the gear menu, for apps that run Claude with their own config folder instead of `~/.claude` (ChatCut, for example), whose tokens EJAJ never saw. **Add folder…** picks the folder, and its sessions then count as Claude everywhere: totals, calendar, projects and sessions. A folder with `projects` inside, or a hidden `.claude/projects`, is read through that. Any other folder is read whole. Each folder has a **Remove** item that also says how many log files the last scan found. When a folder has none or is gone, the dashboard says so. Folders too big to read every 30 seconds (the home folder, a disk, `~/Library`) are refused. `--snapshot` reads the same folders.
+- Checked: tests for config folders, plain folders, a hidden `.claude`, a folder EJAJ already reads counted once, log counts for empty and missing folders (also from the cache) and which folders count as too big. A review with correctness, security, reliability, tests and silent-failure passes, each medium finding checked by a separate verifier. All three were confirmed and fixed: no limit on broad folders, `build/EJAJ --snapshot` reading another settings domain, and no feedback for a folder with no logs. Not checked: the menu and the folder picker were not clicked through in the running app, and no real ChatCut folder was tried.
+
 ## 1.15.0 (2026-11-12)
 
 - Notifications, in Slovak like the quick view. **NOVÝ REKORD** when today costs more than any earlier day (once a day, after at least five earlier days of use). **Claude týždeň dôjde skôr** when the week's pace runs out before the reset, from half the limit on, and **Claude týždeň: 90 % minuté** at 90 % (each once a week). **EJAJ X je vonku** when a new version is on GitHub (once per version). What was sent is remembered across restarts, and a notice macOS couldn't show yet (no permission) comes again later. A click opens the dashboard; **Notifications** in the gear menu turns them off.

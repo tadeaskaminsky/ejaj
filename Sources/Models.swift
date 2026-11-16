@@ -54,6 +54,9 @@ struct Dataset: Codable {
   var hourly: [UsageRow]? = nil
   // One entry per agent session, for the Analytics tab. Snapshots before 1.11 have none.
   var sessions: [SessionUsage]? = nil
+  // How many log files each session folder from the gear menu gave, keyed by the path as added. A folder that
+  // doesn't exist has no entry.
+  var folderLogs: [String: Int]? = nil
 }
 // One agent session: a Claude Code conversation with its subagents, or a Codex thread with the threads it spawned.
 // Its rows are per day, model and tier, like Dataset.rows. Only the session's title and the project's name and folder
@@ -564,26 +567,42 @@ final class Collector: @unchecked Sendable {
   // Where the agents keep their logs. Claude Code writes to ~/.claude, ~/.config/claude or CLAUDE_CONFIG_DIR, and
   // Codex to ~/.codex or CODEX_HOME, moving old sessions to archived_sessions. A folder reached twice through a link
   // is read once; records repeated across folders are deduplicated like any other.
-  func roots(home: URL) -> (codex: [URL], claude: [URL]) {
+  // claudeFolders are the session folders added in the gear menu, for apps that run Claude with their own config
+  // folder (see claudeLogRoot).
+  func roots(home: URL, claudeFolders: [String] = []) -> (codex: [URL], claude: [URL]) {
     func folder(_ key: String) -> [URL] {
       guard let path = environment[key], !path.isEmpty else { return [] }
       return [URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)]
     }
-    // realpath gives one spelling per folder (/var and /private/var included); a missing folder keeps its path.
     func unique(_ urls: [URL]) -> [URL] {
       var seen = Set<String>()
-      return urls.map { url -> URL in
-        guard let resolved = realpath(url.path, nil) else { return url.standardizedFileURL }
-        defer { free(resolved) }
-        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
-      }.filter { seen.insert($0.path).inserted }
+      return urls.map(Collector.resolved).filter { seen.insert($0.path).inserted }
     }
     let codex = ([home.appendingPathComponent(".codex")] + folder("CODEX_HOME")).flatMap {
       [$0.appendingPathComponent("sessions"), $0.appendingPathComponent("archived_sessions")]
     }
     let claude = ([home.appendingPathComponent(".claude"), home.appendingPathComponent(".config/claude")]
       + folder("CLAUDE_CONFIG_DIR")).map { $0.appendingPathComponent("projects") }
-    return (unique(codex), unique(claude))
+    return (unique(codex), unique(claude + claudeFolders.filter { !$0.isEmpty }.map(Collector.claudeLogRoot)))
+  }
+  // realpath gives one spelling per folder (/var and /private/var included); a missing folder keeps its path.
+  static func resolved(_ url: URL) -> URL {
+    guard let resolved = realpath(url.path, nil) else { return url.standardizedFileURL }
+    defer { free(resolved) }
+    return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+  }
+  // Where an added session folder keeps its logs. A Claude config folder (projects inside) is read through projects,
+  // also when it is the hidden .claude of the folder picked. Any other folder is read whole.
+  static func claudeLogRoot(_ path: String) -> URL {
+    let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+    for sub in ["projects", ".claude/projects"] {
+      let candidate = url.appendingPathComponent(sub)
+      var isDirectory: ObjCBool = false
+      if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory), isDirectory.boolValue {
+        return candidate
+      }
+    }
+    return url
   }
   private struct FileRecords<T> {
     let stamp: FileStamp; let records: [T]; let skipped: Int; var titles: [String: SessionTitle] = [:]
@@ -814,11 +833,11 @@ final class Collector: @unchecked Sendable {
     s = g.rows[s.id] ?? s; count(&s); g.rows[s.id] = s
     sessionGroups[key] = g
   }
-  func collect(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Dataset {
+  func collect(home: URL = FileManager.default.homeDirectoryForCurrentUser, claudeFolders: [String] = []) -> Dataset {
     collectionLock.lock(); defer { collectionLock.unlock() }
-    return autoreleasepool { collectSnapshot(home: home) }
+    return autoreleasepool { collectSnapshot(home: home, claudeFolders: claudeFolders) }
   }
-  private func collectSnapshot(home: URL) -> Dataset {
+  private func collectSnapshot(home: URL, claudeFolders: [String]) -> Dataset {
     groups.removeAll(); seen.removeAll(); hourGroups.removeAll(); sessionGroups.removeAll(); skipped = 0
     unreadable = 0
     // Retain only the small aggregate snapshot between refreshes.
@@ -826,8 +845,16 @@ final class Collector: @unchecked Sendable {
       groups.removeAll(keepingCapacity: false); seen.removeAll(keepingCapacity: false)
       hourGroups.removeAll(keepingCapacity: false); sessionGroups.removeAll(keepingCapacity: false)
     }
-    let folders = roots(home: home)
-    let codexFiles = folders.codex.flatMap(files), claudeFiles = folders.claude.flatMap(files)
+    let folders = roots(home: home, claudeFolders: claudeFolders)
+    let claudeByRoot = folders.claude.map { ($0.path, files($0)) }
+    let codexFiles = folders.codex.flatMap(files), claudeFiles = claudeByRoot.flatMap { $0.1 }
+    var folderLogs: [String: Int] = [:]
+    for path in claudeFolders where !path.isEmpty {
+      let root = Collector.resolved(Collector.claudeLogRoot(path)).path
+      if FileManager.default.fileExists(atPath: root) {
+        folderLogs[path] = claudeByRoot.first { $0.0 == root }?.1.count ?? 0
+      }
+    }
     // A renamed Codex thread changes only the index, so it counts as a changed file too.
     var indexPaths = Set<String>()
     let indexFiles = folders.codex.map { $0.deletingLastPathComponent().appendingPathComponent("session_index.jsonl") }
@@ -846,7 +873,7 @@ final class Collector: @unchecked Sendable {
     }
     let revision = Pricing.revision
     if unreadable == 0, stamps == lastFiles, revision == lastRevision, var value = cachedDataset {
-      value.updatedAt = plainISO.string(from: Date()); return value
+      value.updatedAt = plainISO.string(from: Date()); value.folderLogs = folderLogs; return value
     }
     scans += 1
     codexCache = codexCache.filter { stamps[$0.key] != nil }
@@ -949,13 +976,26 @@ final class Collector: @unchecked Sendable {
     sessions.sort { (a: SessionUsage, b: SessionUsage) -> Bool in a.start == b.start ? a.id < b.id : a.start < b.start }
     let result = Dataset(
       updatedAt: plainISO.string(from: Date()), rows: groups.values.sorted { $0.id < $1.id }, skipped: skipped,
-      unreadable: unreadable, hourly: hourGroups.values.sorted { $0.id < $1.id }, sessions: sessions)
+      unreadable: unreadable, hourly: hourGroups.values.sorted { $0.id < $1.id }, sessions: sessions,
+      folderLogs: folderLogs)
     // Retry unreadable files next time; a growing log may finish its last record later.
     lastFiles = unreadable == 0 ? stamps : nil; lastRevision = revision; cachedDataset = result
     return result
   }
 }
 
+// A session folder this broad would have every refresh walk a large part of the disk: the root, the home folder or
+// any folder above it, a volume root, the system folders and the big folders of the home Library.
+func tooBroadForSessions(_ path: String, home: String) -> Bool {
+  let p = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
+  let h = (home as NSString).standardizingPath
+  if p == "/" || h == p || h.hasPrefix(p + "/") { return true }
+  let parts = p.split(separator: "/")
+  if parts.count == 2 && parts[0] == "Volumes" { return true }
+  let system = ["/Volumes", "/System", "/Library", "/Applications", "/usr", "/private", "/opt", "/Users"]
+  let library = ["Library", "Library/Application Support", "Library/Containers", "Library/Group Containers"]
+  return system.contains(p) || library.map { h + "/" + $0 }.contains(p)
+}
 func exact(_ value: Int) -> String { value.formatted(.number.locale(Locale(identifier: "en_US"))) }
 struct ExchangeRate: Codable {
   let usdPerEUR: Double

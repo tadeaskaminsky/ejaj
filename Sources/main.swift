@@ -174,7 +174,10 @@ func makeIcon(_ path: String) {
 if CommandLine.arguments.contains("--snapshot") {
   // pricing.json moves long-context thresholds, which decide the rows' tiers, so load it as the app does.
   Pricing.load()
-  let result = Collector().collect(); let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys];
+  // build/EJAJ has no bundle, so UserDefaults.standard isn't the app's; the session folders are read from the app's.
+  let defaults = UserDefaults(suiteName: Bundle.main.bundleIdentifier ?? "local.tadeas.ejaj") ?? .standard
+  let result = Collector().collect(claudeFolders: defaults.stringArray(forKey: "sessionFolders") ?? [])
+  let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys];
   let data = try encoder.encode(result);
   if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
     try data.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))

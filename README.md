@@ -97,6 +97,7 @@ The gear icon in the dashboard has the settings.
 - **Currency**: EUR (default, converted at the daily ECB rate) or USD.
 - **Appearance**: Dark, Light or System.
 - **Count from**: leaves out everything before the day you pick. Next to the first record it offers every day you came back after 30 or more days without use, so a lone test session months before you started for real doesn't stretch All time. The totals, the chart, the calendar and the quick view's comparison all start on that day, and with All time selected the dashboard says so under the pickers.
+- **Session folders**: for apps that run Claude with their own config folder instead of `~/.claude`, so their sessions don't show up otherwise. **Add folder…** picks the folder. When it has a `projects` folder inside (a config folder like `~/.claude`), or a hidden `.claude/projects`, EJAJ reads only that. Any other folder is read whole, with its subfolders except hidden ones. EJAJ reads it right away, and its sessions count as Claude everywhere. Each added folder has a **Remove** item in the same menu, which also says how many log files the last scan found there. When a folder has none, or no longer exists, the dashboard says so at the top. Folders too big to read every 30 seconds, such as the home folder, a disk or `~/Library`, are refused. Hidden folders show in the picker, and `⌘⇧G` takes a typed path.
 - **Launch at login**: registers EJAJ as a login item. It shows up in System Settings under General > Login Items.
 - **Edit prices (pricing.json)**: opens `~/Library/Application Support/EJAJ/pricing.json`, creating it with the bundled prices the first time.
 
@@ -156,7 +157,7 @@ scripts/package.sh --install /Applications/EJAJ.app
 
 ## Where the numbers come from
 
-- **Claude Code**: `~/.claude/projects/**/*.jsonl`, `~/.config/claude/projects` and `$CLAUDE_CONFIG_DIR/projects` when they exist
+- **Claude Code**: `~/.claude/projects/**/*.jsonl`, `~/.config/claude/projects` and `$CLAUDE_CONFIG_DIR/projects` when they exist, plus the session folders added in the gear menu
 - **Codex**: `~/.codex/sessions` and `~/.codex/archived_sessions` (plus the same folders under `$CODEX_HOME`), `.jsonl` and the compressed `.jsonl.zst` rollouts
 
 EJAJ reads only the token counts, model names, timestamps and the fields that change the price (speed, service tier, inference geo, web search count) from those files, never prompts or tool output. For the Analytics tab it also reads each request's session id and working folder, the session titles, and Codex thread names from `session_index.jsonl`. It saves the project's name and folder with each session, not the full working path. Repeated records are counted once, also across folders, and a folder reached twice through a symlink is read once. The environment variables only count when EJAJ itself sees them, so for the app started from Finder or at login that is usually never. The last result is cached in `~/Library/Application Support/EJAJ/history.json` so the app opens with numbers straight away. Days are Europe/Bratislava days.

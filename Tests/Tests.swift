@@ -370,6 +370,58 @@ import Foundation
     precondition(plainHome.rows.first { $0.provider == "claude" }!.requests == 2)
     print("PASS: archived Codex sessions, ~/.config/claude, CLAUDE_CONFIG_DIR, CODEX_HOME, linked folders once")
 
+    // Session folders from the gear menu: a config folder is read through its projects, a plain folder whole, and
+    // a folder EJAJ already reads (here ~/.claude, a link to custom) counts once.
+    let sf = root.appendingPathComponent("added"), sfHome = sf.appendingPathComponent("home")
+    let configFolder = sf.appendingPathComponent("ChatCut/claude"), plainFolder = sf.appendingPathComponent("plain")
+    for dir in [configFolder.appendingPathComponent("projects/p"), plainFolder.appendingPathComponent("p"), sfHome] {
+      try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    try claude("cfg", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1]).write(
+      to: configFolder.appendingPathComponent("projects/p/a.jsonl"), atomically: true, encoding: .utf8)
+    // Outside projects, so a config folder never reads it.
+    try claude("stray", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1]).write(
+      to: configFolder.appendingPathComponent("history.jsonl"), atomically: true, encoding: .utf8)
+    try claude("plain", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1]).write(
+      to: plainFolder.appendingPathComponent("p/b.jsonl"), atomically: true, encoding: .utf8)
+    let sfCollector = Collector(environment: [:])
+    precondition(sfCollector.collect(home: sfHome).rows.isEmpty)
+    let addedRows = sfCollector.collect(home: sfHome, claudeFolders: [configFolder.path, plainFolder.path, ""])
+    precondition(addedRows.rows.first { $0.provider == "claude" }?.requests == 2 && sfCollector.filesRead == 2)
+    precondition(addedRows.folderLogs == [configFolder.path: 1, plainFolder.path: 1])
+    // The folder holding a hidden .claude counts as that config folder; an empty folder gives 0 logs, a missing one
+    // none, also when nothing else changed and the scan comes from the cache.
+    let parent = sf.appendingPathComponent("parent"), empty = sf.appendingPathComponent("empty")
+    try FileManager.default.createDirectory(
+      at: parent.appendingPathComponent(".claude/projects/p"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+    try claude("hidden", "claude-opus-5-5", ["input_tokens": 1, "output_tokens": 1]).write(
+      to: parent.appendingPathComponent(".claude/projects/p/c.jsonl"), atomically: true, encoding: .utf8)
+    precondition(Collector.claudeLogRoot(parent.path).path == parent.appendingPathComponent(".claude/projects").path)
+    let hidden = sfCollector.collect(home: sfHome, claudeFolders: [parent.path])
+    precondition(hidden.rows.first { $0.provider == "claude" }?.requests == 1 && hidden.folderLogs == [parent.path: 1])
+    let gone = sf.appendingPathComponent("gone").path
+    let statuses = sfCollector.collect(home: sfHome, claudeFolders: [parent.path, empty.path, gone]).folderLogs
+    precondition(statuses == [parent.path: 1, empty.path: 0], "\(String(describing: statuses))")
+    // An empty path would read the working folder.
+    precondition(sfCollector.roots(home: sfHome, claudeFolders: [""]).claude.count == 2)
+    precondition(sfCollector.collect(home: sfHome).rows.isEmpty)
+    let homePath = "/Users/someone"
+    for broad in ["/", "/Users", homePath, homePath + "/", "/Volumes", "/Volumes/Backup", "/System", "/Library",
+      homePath + "/Library", homePath + "/Library/Application Support"] {
+      precondition(tooBroadForSessions(broad, home: homePath), broad)
+    }
+    for fine in [homePath + "/.claude", homePath + "/Library/Application Support/ChatCut", "/Volumes/Backup/claude",
+      homePath + "/projects"] {
+      precondition(!tooBroadForSessions(fine, home: homePath), fine)
+    }
+    let twice = Collector(environment: [:]).collect(
+      home: f, claudeFolders: [custom.path, f.appendingPathComponent(".claude/projects").path])
+    precondition(twice.rows.first { $0.provider == "claude" }!.requests == 2 && twice.skipped == 1)
+    print(
+      "PASS: session folders from the gear menu, config folders through projects (hidden too), logs per folder,"
+        + " known folders once, broad folders")
+
     // Codex writes thread_settings_applied before each turn, and builds before 0.163 skip the first turn.
     // A log starts in its first snapshot's tier; a spawned subagent runs in its parent's tier when it was spawned.
     let s = root.appendingPathComponent("spawn"), sc = s.appendingPathComponent(".codex/sessions")
