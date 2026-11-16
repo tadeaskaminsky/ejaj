@@ -125,22 +125,29 @@ private let slovakTime: DateFormatter = {
   @Published var sessionFolders = UserDefaults.standard.stringArray(forKey: "sessionFolders") ?? [] {
     didSet { UserDefaults.standard.set(sessionFolders, forKey: "sessionFolders"); rescan() }
   }
-  func addSessionFolder() {
+  // Adds a typed, picked or found session folder. Returns why it can't be added, or nil once it is.
+  func addSessionFolder(_ typed: String) -> String? {
+    let path = normalizedFolder(typed)
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    if let problem = sessionFolderProblem(path, home: home, added: sessionFolders) { return problem }
+    sessionFolders.append(path); return nil
+  }
+  // The folder picker, for the Choose… button. Config folders such as ~/.claude are hidden, so hidden files show.
+  static func chooseFolder() -> String? {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-    // Config folders such as ~/.claude are hidden.
     panel.showsHiddenFiles = true
     panel.message =
       "Choose the folder where the app keeps its Claude sessions (the one with projects inside, or projects itself)."
     panel.prompt = "Add"
     NSApp.activate(ignoringOtherApps: true)
-    guard panel.runModal() == .OK, let url = panel.url else { return }
-    let path = url.standardizedFileURL.path
-    if tooBroadForSessions(path, home: FileManager.default.homeDirectoryForCurrentUser.path) {
-      error = "\(Self.tilde(path)) is too big to read every 30 seconds. Pick the folder the app keeps its sessions in."
-      return
-    }
-    if !sessionFolders.contains(path) { sessionFolders.append(path) }
+    guard panel.runModal() == .OK, let url = panel.url else { return nil }
+    return url.standardizedFileURL.path
+  }
+  // The log folders EJAJ reads already, built in and added, which the sheet's search leaves out.
+  var readFolders: Set<String> {
+    Set(collector.roots(home: FileManager.default.homeDirectoryForCurrentUser, claudeFolders: sessionFolders).claude
+      .map(\.path))
   }
   static func tilde(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
   // What the last scan found in an added session folder, for the gear menu. nil before the first scan with it.
@@ -359,9 +366,20 @@ private let slovakTime: DateFormatter = {
   func hourlyToday(provider: String = "all") -> [UsageRow] {
     hourlyRows(on: dayFormatter.string(from: Date()), provider: provider)
   }
+  // Project names given in the Projects tab, keyed by the name EJAJ found.
+  @Published var projectNames = UserDefaults.standard.dictionary(forKey: "projectNames") as? [String: String] ?? [:] {
+    didSet { UserDefaults.standard.set(projectNames, forKey: "projectNames") }
+  }
+  // Renames a project (see projectRename in Models.swift). Returns the name it now has.
+  @discardableResult func renameProject(_ p: ProjectTotal, to name: String) -> String {
+    let result = projectRename(projectNames, name: p.name, originals: p.originals, to: name)
+    projectNames = result.names; return result.name
+  }
+  // The sessions with the project names given in the Projects tab. nil before the first scan that read them.
+  var sessions: [SessionUsage]? { dataset?.sessions.map { renamingProjects($0, projectNames) } }
   // The sessions' usage in the chosen range and platform, after Count from. nil before the first scan that read them.
   func sessionTotals() -> [SessionTotal]? {
-    guard let sessions = dataset?.sessions else { return nil }
+    guard let sessions else { return nil }
     return totalsBySession(sessions, from: rangeStart, through: dayFormatter.string(from: Date()), provider: provider)
   }
   // The first day the range counts, after Count from. nil counts every day.
@@ -372,7 +390,7 @@ private let slovakTime: DateFormatter = {
   // Today's part of every session on the chosen platform, whatever the range, for Running now.
   func todayTotals() -> [SessionTotal] {
     let today = dayFormatter.string(from: Date())
-    return totalsBySession(dataset?.sessions ?? [], from: today, through: today, provider: provider)
+    return totalsBySession(sessions ?? [], from: today, through: today, provider: provider)
   }
   // The hourly rows of the chosen range and platform, for the Patterns tab.
   func hourlyInRange() -> [UsageRow] {
@@ -1263,6 +1281,7 @@ struct Dashboard: View {
   @ObservedObject var store: UsageStore
   @ViewState var costMode = false
   @ViewState var showWrapped = false
+  @ViewState var showAddFolder = false
   // The last tab is remembered; 1.11 called the Projects tab Analytics.
   @ViewState var tab: String = {
     let saved = UserDefaults.standard.string(forKey: "tab") ?? ""
@@ -1352,6 +1371,7 @@ struct Dashboard: View {
     }.background(canvas)
       .foregroundStyle(ink).preferredColorScheme(store.colorScheme).frame(minWidth: 880, minHeight: 560)
       .sheet(isPresented: $showWrapped) { WrappedView(store: store) { showWrapped = false } }
+      .sheet(isPresented: $showAddFolder) { AddFolderSheet(store: store) { showAddFolder = false } }
   }
   // Currency, appearance, Count from, session folders, login item and prices. The chip is drawn around the menu,
   // because a borderless menu button ignores a styled label.
@@ -1387,7 +1407,7 @@ struct Dashboard: View {
           }
         }
         if !store.sessionFolders.isEmpty { Divider() }
-        Button("Add folder…") { store.addSessionFolder() }
+        Button("Add folder…") { showAddFolder = true }
       }
       Toggle("Launch at login", isOn: $store.launchAtLogin)
       Toggle("Notifications", isOn: $store.notifications)
@@ -1797,6 +1817,9 @@ struct ProjectsView: View {
   @ObservedObject var store: UsageStore
   @ViewState private var project: String?
   @ViewState private var session: String?
+  @ViewState private var renaming = false
+  // The project whose row was right-clicked for Rename…, which opens the popover on that row.
+  @ViewState private var renamingRow: String?
   init(store: UsageStore, project: String? = nil, session: String? = nil) {
     self.store = store; _project = ViewState(initialValue: project); _session = ViewState(initialValue: session)
   }
@@ -1811,7 +1834,20 @@ struct ProjectsView: View {
               current: sessionTitle(s.session))
             SessionDetail(store: store, s: s)
           } else {
-            Breadcrumb(trail: [("Projects", { project = nil })], current: p.name)
+            HStack(spacing: 10) {
+              Breadcrumb(trail: [("Projects", { project = nil })], current: p.name)
+              Button {
+                renaming = true
+              } label: {
+                Label("Rename", systemImage: "pencil")
+              }.buttonStyle(ChipStyle()).help("Give this project a name of your own")
+                .popover(isPresented: $renaming, arrowEdge: .bottom) {
+                  RenameProject(project: p) { name in
+                    project = store.renameProject(p, to: name); renaming = false
+                  }
+                }
+              Spacer()
+            }
             projectDetail(p)
           }
         } else {
@@ -1852,6 +1888,13 @@ struct ProjectsView: View {
               Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
             }
           }.help(p.folders.isEmpty ? p.name : p.folders.joined(separator: "\n"))
+            .contextMenu { Button("Rename…") { renamingRow = p.name } }
+            .popover(
+              isPresented: Binding(get: { renamingRow == p.name }, set: { if !$0 { renamingRow = nil } }),
+              arrowEdge: .bottom
+            ) {
+              RenameProject(project: p) { name in store.renameProject(p, to: name); renamingRow = nil }
+            }
         }
         if projects.contains(where: \.unpriced) { UnpricedFootnote() }
       }
@@ -2231,7 +2274,7 @@ struct WrappedView: View {
   var data: Wrapped {
     wrapped(
       year: WrappedView.year, rows: store.countedRows, hourly: counted(store.dataset?.hourly ?? [], from: store.countFrom),
-      sessions: store.dataset?.sessions ?? [], countFrom: store.countFrom)
+      sessions: store.sessions ?? [], countFrom: store.countFrom)
   }
   static let tints: [Color] = [
     Color(red: 0.55, green: 0.09, blue: 0.13), Color(red: 0.07, green: 0.32, blue: 0.20),
@@ -2436,5 +2479,99 @@ struct WrappedCard: View {
           colors: [Color(red: 0.55, green: 0.09, blue: 0.13), Color(red: 0.07, green: 0.30, blue: 0.20)],
           startPoint: .topLeading, endPoint: .bottomTrailing),
         in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+  }
+}
+// Gear menu > Session folders > Add folder…: a typed path, the folder picker, or a folder the search found.
+struct AddFolderSheet: View {
+  @ObservedObject var store: UsageStore
+  var close: () -> Void
+  @ViewState var path = ""
+  @ViewState var problem: String?
+  // nil while the search runs.
+  @ViewState var found: [FoundFolder]?
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("Add a session folder").font(.system(size: 17, weight: .semibold))
+      Text(
+        "For apps that run Claude with their own config folder. Type its path, choose it, or add one EJAJ found."
+      ).font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        TextField("~/Library/Application Support/ChatCut", text: $path)
+          .textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
+          .onSubmit(add).onChange(of: path) { _ in problem = nil }
+        // A picked folder is added right away, as before 1.16.1; the field shows it if it can't be.
+        Button("Choose…") { if let picked = UsageStore.chooseFolder() { path = UsageStore.tilde(picked); add() } }
+        Button("Add", action: add).keyboardShortcut(.defaultAction)
+          .disabled(path.trimmingCharacters(in: .whitespaces).isEmpty)
+      }
+      if let problem { Text(problem).font(.system(size: 12)).foregroundStyle(orange) }
+      Divider()
+      Text("Found on this Mac").font(.system(size: 13, weight: .semibold))
+      if let found {
+        if found.isEmpty {
+          Text(
+            "No other folders with Claude sessions where apps usually keep them. Ask the app where it keeps its "
+              + "Claude sessions and type the path above."
+          ).font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+        } else {
+          VStack(spacing: 6) {
+            ForEach(found) { folder in
+              HStack(spacing: 10) {
+                Image(systemName: "folder").foregroundStyle(muted)
+                Text(UsageStore.tilde(folder.path)).font(.system(size: 12, design: .monospaced))
+                  .lineLimit(1).truncationMode(.middle).help(folder.path)
+                Spacer(minLength: 8)
+                Text("\(folder.logs) log\(folder.logs == 1 ? "" : "s")").font(.system(size: 12)).foregroundStyle(muted)
+                if store.sessionFolders.contains(folder.path) {
+                  Text("Added").font(.system(size: 12)).foregroundStyle(muted)
+                } else {
+                  Button("Add") { problem = store.addSessionFolder(folder.path) }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("Looking for Claude sessions…").font(.system(size: 12)).foregroundStyle(muted)
+        }
+      }
+      Text("EJAJ already reads ~/.claude, ~/.config/claude and CLAUDE_CONFIG_DIR, so apps using those are counted.")
+        .font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+      HStack {
+        Spacer()
+        Button("Done", action: close).keyboardShortcut(.cancelAction)
+      }
+    }.padding(24).frame(width: 600).foregroundStyle(ink)
+      .task {
+        let home = FileManager.default.homeDirectoryForCurrentUser, skip = store.readFolders
+        found = await Task.detached(priority: .userInitiated) { findSessionFolders(home: home, skip: skip) }.value
+      }
+  }
+  private func add() {
+    problem = store.addSessionFolder(path)
+    if problem == nil { close() }
+  }
+}
+// The Rename popover in a project's detail. An empty name gives the project back the name EJAJ found.
+struct RenameProject: View {
+  var project: ProjectTotal
+  var save: (String) -> Void
+  @ViewState private var name = ""
+  var body: some View {
+    let found = project.originals.joined(separator: ", ")
+    VStack(alignment: .leading, spacing: 10) {
+      Text("Rename project").font(.system(size: 13, weight: .semibold))
+      TextField(found, text: $name).textFieldStyle(.roundedBorder).frame(width: 300).onSubmit { save(name) }
+      Text("Found as " + found + ". Leave it empty to use that name again.")
+        .font(.system(size: 11)).foregroundStyle(muted).lineLimit(3).truncationMode(.middle)
+        .frame(width: 300, alignment: .leading)
+      HStack {
+        if project.originals != [project.name] { Button("Use found name") { save("") } }
+        Spacer()
+        Button("Save") { save(name) }.keyboardShortcut(.defaultAction)
+      }
+    }.padding(16).onAppear { name = project.name }
   }
 }

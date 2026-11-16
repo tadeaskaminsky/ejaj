@@ -68,7 +68,36 @@ struct SessionUsage: Codable, Identifiable {
   var title: String? = nil
   var start: Date; var end: Date  // the first and the last request
   var rows: [UsageRow]
+  // The project's own name when the user renamed it (renamingProjects); nil otherwise. Never saved by the collector.
+  var originalProject: String? = nil
   var id: String { provider + "|" + session }
+}
+// Renames a project in the Projects tab, or gives it back the name EJAJ found when the new name is empty or that name.
+// Every found name shown as this project is renamed: the ones with sessions in the range (originals) and any other
+// that was given the same name, so a merged project never splits outside the range. Returns the names and the
+// project's name after the change.
+func projectRename(
+  _ names: [String: String], name current: String, originals: [String], to typed: String
+) -> (names: [String: String], name: String) {
+  let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+  var names = names
+  let all = Set(originals).union(names.filter { $0.value == current }.map(\.key))
+  for original in all { names[original] = name.isEmpty || name == original ? nil : name }
+  return (names, name.isEmpty ? (originals.first ?? current) : name)
+}
+// Project names the user gave in the Projects tab, keyed by the name EJAJ found (often a folder name such as a long
+// hash). Renaming two projects to one name makes them one project, like two folders with the same name.
+func renamingProjects(_ sessions: [SessionUsage], _ names: [String: String]) -> [SessionUsage] {
+  sessions.map { s in
+    let original = s.originalProject ?? s.project
+    var s = s
+    if let name = names[original], !name.isEmpty, name != original {
+      s.originalProject = original; s.project = name
+    } else {
+      s.originalProject = nil; s.project = original
+    }
+    return s
+  }
 }
 // The project a working folder belongs to: the git repository around it, with a Claude Code worktree counted as the
 // repository it came from. Folders outside a repository are their own project. Claude's and Codex's scratch folders
@@ -119,6 +148,8 @@ struct ProjectTotal: Identifiable {
   var name: String; var folders: [String] = []; var sessions: [SessionTotal] = []
   var cost = 0.0; var tokens = 0; var last = Date.distantPast
   var unpriced: Bool { sessions.contains(where: \.unpriced) }
+  // The names EJAJ found for the projects shown under this one: one, or more when they were renamed to one name.
+  var originals: [String] { Set(sessions.map { $0.session.originalProject ?? $0.session.project }).sorted() }
   var id: String { name }
 }
 func totalsByProject(_ sessions: [SessionTotal]) -> [ProjectTotal] {
@@ -995,6 +1026,76 @@ func tooBroadForSessions(_ path: String, home: String) -> Bool {
   let system = ["/Volumes", "/System", "/Library", "/Applications", "/usr", "/private", "/opt", "/Users"]
   let library = ["Library", "Library/Application Support", "Library/Containers", "Library/Group Containers"]
   return system.contains(p) || library.map { h + "/" + $0 }.contains(p)
+}
+// A typed or picked session folder as it is saved: ~ expanded, no trailing slash, no . or .. parts.
+func normalizedFolder(_ path: String) -> String {
+  ((path.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath as NSString)
+    .standardizingPath
+}
+// Why a session folder can't be added, or nil when it can. The path is a normalized one.
+func sessionFolderProblem(_ path: String, home: String, added: [String]) -> String? {
+  if path.isEmpty { return "Type the folder's path, for example ~/Library/Application Support/ChatCut." }
+  guard path.hasPrefix("/") else { return "Type the whole path, starting with / or ~." }
+  var isDirectory: ObjCBool = false
+  guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else { return "No such folder." }
+  guard isDirectory.boolValue else { return "That is a file. Type the folder it is in." }
+  if tooBroadForSessions(path, home: home) {
+    return "That folder is too big to read every 30 seconds. Pick the one the app keeps its sessions in."
+  }
+  if added.contains(path) { return "That folder is already added." }
+  return nil
+}
+// A folder with Claude Code sessions that EJAJ doesn't read yet, for the Add session folder sheet.
+struct FoundFolder: Equatable, Identifiable { var path: String; var logs: Int; var id: String { path } }
+// Looks for Claude config folders (projects/<project>/<session>.jsonl) where apps keep them. In the hidden folders of
+// the home folder it looks in each folder and the folders inside it. In ~/.config and ~/Library/Application Support
+// it never lists an app's folder: macOS guards some of them (Chrome's, for one) and listing one asks the user for
+// access to that app's data. It only checks whether a projects folder exists in the app's folder or under the names
+// apps give a Claude config (.claude, claude, claude-code and so on); that check asks nothing. A folder counts when
+// one of its logs has a Claude Code sessionId. Folders in skip (resolved, like Collector.resolved) are left out.
+func findSessionFolders(home: URL, skip: Set<String>) -> [FoundFolder] {
+  let fm = FileManager.default
+  var found: [FoundFolder] = []
+  func subfolders(_ url: URL, hidden: Bool) -> [URL] {
+    let items = (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey]))
+      ?? []
+    return items.filter { item in
+      let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+      let name = item.lastPathComponent
+      return values?.isDirectory == true && values?.isPackage != true && name.hasPrefix(".") == hidden
+        && ![".Trash", ".git", ".cache", ".npm", ".cargo", ".rustup", ".gradle", ".m2", ".docker"].contains(name)
+    }.sorted { $0.path < $1.path }
+  }
+  func check(_ folder: URL) {
+    let projects = folder.appendingPathComponent("projects")
+    var isDirectory: ObjCBool = false
+    guard fm.fileExists(atPath: projects.path, isDirectory: &isDirectory), isDirectory.boolValue,
+      !skip.contains(Collector.resolved(projects).path), !found.contains(where: { $0.path == folder.path })
+    else { return }
+    let logs = (fm.enumerator(at: projects, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])?
+      .compactMap { $0 as? URL } ?? []).filter { $0.pathExtension == "jsonl" }
+    guard !logs.isEmpty, logs.prefix(5).contains(where: claudeLog) else { return }
+    found.append(FoundFolder(path: folder.path, logs: logs.count))
+  }
+  for dot in subfolders(home, hidden: true) where dot.lastPathComponent != ".config" {
+    check(dot)
+    for sub in subfolders(dot, hidden: false) + subfolders(dot, hidden: true) { check(sub) }
+  }
+  let names = ["", ".claude", "claude", "Claude", ".claude-code", "claude-code", "claude-config", "agent", ".agent"]
+  for top in ["Library/Application Support", ".config"] {
+    for app in subfolders(home.appendingPathComponent(top), hidden: false)
+    where !app.lastPathComponent.hasPrefix("com.apple.") {
+      for name in names { check(name.isEmpty ? app : app.appendingPathComponent(name)) }
+    }
+  }
+  return found
+}
+// Whether a .jsonl file is a Claude Code session log: its first 64 KB carry a sessionId.
+func claudeLog(_ url: URL) -> Bool {
+  guard let h = try? FileHandle(forReadingFrom: url) else { return false }
+  defer { try? h.close() }
+  guard let data = try? h.read(upToCount: 65536) else { return false }
+  return data.range(of: Data("\"sessionId\"".utf8)) != nil
 }
 func exact(_ value: Int) -> String { value.formatted(.number.locale(Locale(identifier: "en_US"))) }
 struct ExchangeRate: Codable {

@@ -415,12 +415,76 @@ import Foundation
       homePath + "/projects"] {
       precondition(!tooBroadForSessions(fine, home: homePath), fine)
     }
+    // A typed path: ~ expanded, checked, and what the search finds where apps keep their Claude config.
+    precondition(normalizedFolder("  ~/x/../y/ ") == NSHomeDirectory() + "/y")
+    let realHome = FileManager.default.homeDirectoryForCurrentUser.path
+    precondition(sessionFolderProblem("", home: realHome, added: [])?.hasPrefix("Type the folder's path") == true)
+    // A relative path that exists from the working folder is still refused: the app's working folder is /.
+    let cwd = FileManager.default.currentDirectoryPath
+    FileManager.default.changeCurrentDirectoryPath(sf.path)
+    precondition(sessionFolderProblem("ChatCut", home: realHome, added: [])?.hasPrefix("Type the whole path") == true)
+    FileManager.default.changeCurrentDirectoryPath(cwd)
+    precondition(sessionFolderProblem(sf.appendingPathComponent("nope").path, home: realHome, added: []) != nil)
+    precondition(
+      sessionFolderProblem(configFolder.appendingPathComponent("history.jsonl").path, home: realHome, added: []) != nil)
+    precondition(sessionFolderProblem(realHome, home: realHome, added: []) != nil)
+    precondition(sessionFolderProblem(configFolder.path, home: realHome, added: [configFolder.path]) != nil)
+    precondition(sessionFolderProblem(configFolder.path, home: realHome, added: []) == nil)
+    let fh = sf.appendingPathComponent("findhome")
+    let session = json(["sessionId": "s1", "timestamp": "2026-11-05T09:00:00Z", "message": ["id": "m"]]) + "\n"
+    let places = [
+      ".claude/projects/p", ".chatcut/projects/p", ".tool/claude/projects/p",
+      "Library/Application Support/ChatCut/.claude/projects/p",
+      "Library/Application Support/Deep/a/b/projects/p", "Library/Application Support/Named/claude-code/projects/p",
+      ".config/other/projects/p", "Library/Application Support/NotClaude/projects/p",
+      "Library/Application Support/com.apple.private/projects/p",
+    ]
+    for place in places {
+      let dir = fh.appendingPathComponent(place)
+      try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      try (place.contains("NotClaude") ? "{\"other\": 1}\n" : session).write(
+        to: dir.appendingPathComponent("a.jsonl"), atomically: true, encoding: .utf8)
+    }
+    try session.write(to: fh.appendingPathComponent(".chatcut/projects/p/b.jsonl"), atomically: true, encoding: .utf8)
+    let skip: Set<String> = [Collector.resolved(fh.appendingPathComponent(".claude/projects")).path]
+    let foundFolders = findSessionFolders(home: fh, skip: skip)
+    // Deep/a/b is only reachable by listing the app's folder, which the search never does.
+    let expected = [".chatcut", ".tool/claude", ".config/other", "Library/Application Support/ChatCut/.claude",
+      "Library/Application Support/Named/claude-code"].map { Collector.resolved(fh.appendingPathComponent($0)).path }
+    precondition(
+      Set(foundFolders.map { Collector.resolved(URL(fileURLWithPath: $0.path)).path }) == Set(expected),
+      "\(foundFolders.map(\.path))")
+    precondition(foundFolders.first { $0.path.hasSuffix(".chatcut") }?.logs == 2)
+    precondition(foundFolders.count == expected.count, "\(foundFolders.map(\.path))")
+    // Renamed projects: a hash folder gets a name, two projects renamed alike are one, an empty name is no rename.
+    func usage(_ id: String, _ project: String, output: Int) -> SessionUsage {
+      let row = UsageRow(date: "2026-11-05", provider: "claude", model: "claude-opus-5-5", source: "Claude Code",
+        output: output, requests: 1)
+      return SessionUsage(provider: "claude", session: id, project: project, start: Date(), end: Date(), rows: [row])
+    }
+    let named = renamingProjects(
+      [usage("a", "3f9c1e7b2a", output: 100), usage("b", "8d2e4c6f1b", output: 200), usage("c", "ejaj", output: 400)],
+      ["3f9c1e7b2a": "ChatCut", "8d2e4c6f1b": "ChatCut", "ejaj": ""])
+    precondition(named.map(\.project) == ["ChatCut", "ChatCut", "ejaj"] && named[2].originalProject == nil)
+    let renamedProjects = totalsByProject(totalsBySession(named, from: nil, through: "2026-12-31", provider: "all"))
+    precondition(renamedProjects.map(\.name) == ["ejaj", "ChatCut"], "\(renamedProjects.map(\.name))")
+    precondition(renamedProjects[1].originals == ["3f9c1e7b2a", "8d2e4c6f1b"] && renamedProjects[1].tokens == 300)
+    precondition(renamingProjects(named, ["3f9c1e7b2a": "Video"]).map(\.project) == ["Video", "8d2e4c6f1b", "ejaj"])
+    // Renaming or restoring a merged project changes every found name in it, also those without sessions in range.
+    let merged = ["3f9c1e7b2a": "ChatCut", "8d2e4c6f1b": "ChatCut", "other": "Other"]
+    let video = projectRename(merged, name: "ChatCut", originals: ["8d2e4c6f1b"], to: "  Video ")
+    precondition(
+      video.name == "Video" && video.names == ["3f9c1e7b2a": "Video", "8d2e4c6f1b": "Video", "other": "Other"])
+    let restoredNames = projectRename(merged, name: "ChatCut", originals: ["8d2e4c6f1b"], to: "")
+    precondition(restoredNames.name == "8d2e4c6f1b" && restoredNames.names == ["other": "Other"])
+    let same = projectRename([:], name: "ejaj", originals: ["ejaj"], to: "ejaj")
+    precondition(same.name == "ejaj" && same.names.isEmpty)
     let twice = Collector(environment: [:]).collect(
       home: f, claudeFolders: [custom.path, f.appendingPathComponent(".claude/projects").path])
     precondition(twice.rows.first { $0.provider == "claude" }!.requests == 2 && twice.skipped == 1)
     print(
       "PASS: session folders from the gear menu, config folders through projects (hidden too), logs per folder,"
-        + " known folders once, broad folders")
+        + " known folders once, broad folders, typed paths, the folder search, renamed projects")
 
     // Codex writes thread_settings_applied before each turn, and builds before 0.163 skip the first turn.
     // A log starts in its first snapshot's tier; a spawned subagent runs in its parent's tier when it was spawned.
