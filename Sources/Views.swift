@@ -81,6 +81,10 @@ func providerName(_ p: String) -> String { p == "gpt" ? "Codex" : "Claude" }
     completionHandler()
   }
 }
+private let slovakClock: DateFormatter = {
+  let f = DateFormatter(); f.dateFormat = "HH:mm"; f.locale = Locale(identifier: "sk_SK")
+  f.timeZone = dayFormatter.timeZone; return f
+}()
 private let slovakTime: DateFormatter = {
   let f = DateFormatter(); f.dateFormat = "EEE HH:mm"; f.locale = Locale(identifier: "sk_SK")
   f.timeZone = dayFormatter.timeZone; return f
@@ -100,8 +104,13 @@ private let slovakTime: DateFormatter = {
         costByDay: byDay, today: dayFormatter.string(from: Date()), log: Notifier.shared.sent, money: money))
     if let week = plan?.weekly, let reset = week.resetsAt {
       let minute = { (d: Date) in slovakTime.string(from: Date(timeIntervalSince1970: (d.timeIntervalSince1970 / 60).rounded() * 60)) }
-      notify(weekNotice(used: week.used, resetsAt: reset, now: Date(), log: Notifier.shared.sent, time: minute))
+      notify(
+        weekNotice(
+          used: week.used, resetsAt: reset, now: Date(), log: Notifier.shared.sent,
+          runsOut: limitForecasts().week?.runsOut, time: minute))
     }
+    let clock = { (d: Date) in slovakClock.string(from: Date(timeIntervalSince1970: (d.timeIntervalSince1970 / 60).rounded() * 60)) }
+    notify(fiveHourNotice(limitForecasts().five, now: Date(), log: Notifier.shared.sent, time: clock))
   }
   @Published var theme = UserDefaults.standard.string(forKey: "appearance") ?? "dark" {
     didSet { UserDefaults.standard.set(theme, forKey: "appearance"); applyTheme() }
@@ -255,6 +264,22 @@ private let slovakTime: DateFormatter = {
   // Claude plan limits (5-hour and weekly), read every 5 minutes. A failed read keeps the last numbers.
   @Published var plan: PlanLimits?
   @Published var planState = PlanState.loading
+  // Readings of the plan limits over the last 24 hours, for the forecasts. Kept across launches.
+  @Published var planSamples: [PlanSample] =
+    UserDefaults.standard.data(forKey: "planSamples").flatMap { try? JSONDecoder().decode([PlanSample].self, from: $0) }
+    ?? []
+  {
+    didSet { UserDefaults.standard.set(try? JSONEncoder().encode(planSamples), forKey: "planSamples") }
+  }
+  // When the 5-hour and weekly limits run out at the current pace. Measured at the last read, not at the clock, so
+  // the time doesn't creep later between reads while `used` stands still.
+  func limitForecasts() -> (five: LimitForecast?, week: LimitForecast?) {
+    let now = planFetched ?? Date()
+    return (
+      plan?.fiveHour.flatMap { fiveHourForecast($0, samples: planSamples, now: now) },
+      plan?.weekly.flatMap { weeklyForecast($0, samples: planSamples, now: now) }
+    )
+  }
   // The quick view's help card, shown in place of its figures.
   @Published var quickHelp = false
   @Published var planFetched: Date?
@@ -269,7 +294,8 @@ private let slovakTime: DateFormatter = {
         guard let self else { return }; self.planBusy = false
         switch result {
         case .success(let limits):
-          self.plan = limits; self.planState = .ok; self.planFetched = Date(); self.checkNotices()
+          self.plan = limits; self.planState = .ok; self.planFetched = Date()
+          self.planSamples = addPlanSample(self.planSamples, limits, at: Date()); self.checkNotices()
         case .failure(let state):
           self.planState = state
           // A network or server error keeps the last numbers; a lost login or a non-subscription account clears them.
@@ -1158,21 +1184,21 @@ struct PlanBanner: View {
   var body: some View {
     // Numbers from before the weekly reset describe a week that is over, so they give way to a note.
     if let plan = store.plan, let week = plan.weekly, !(week.resetsAt.map { $0 <= now } ?? false) {
-      let projected = week.resetsAt.flatMap { weekProjection(used: week.used, resetsAt: $0, now: now) }
+      let forecasts = store.limitForecasts(), projected = forecasts.week?.atReset
       let color =
         projected.map { $0 >= 100 ? PlanBanner.red : $0 >= 85 ? blue : orange }
         ?? (week.used >= 90 ? PlanBanner.red : blue)
       HStack(spacing: 10) {
         Image(systemName: "gauge.with.dots.needle.67percent").frame(width: 14)
-        Text("Claude week").fontWeight(.semibold).foregroundStyle(ink)
-        Text(pct(100 - week.used) + " left").fontWeight(.semibold)
+        Text("Claude week").fontWeight(.semibold).foregroundStyle(ink).fixedSize()
+        Text(pct(100 - week.used) + " left").fontWeight(.semibold).fixedSize()
         // Drawn by hand: ProgressView is AppKit-backed and ImageRenderer leaves it blank in renders.
         Capsule().fill(color.opacity(0.25)).frame(width: 90, height: 6).overlay(alignment: .leading) {
           Capsule().fill(color).frame(width: 90 * week.used / 100, height: 6)
         }
-        Text(pace(week, projected: projected)).foregroundStyle(ink).layoutPriority(1)
+        Text(pace(week, forecasts.week)).foregroundStyle(ink).layoutPriority(1)
         Spacer(minLength: 12)
-        Text(trailing(plan)).foregroundStyle(muted)
+        Text(trailing(plan, five: forecasts.five)).foregroundStyle(muted)
       }.font(.system(size: 13).monospacedDigit()).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12)
         .padding(.vertical, 8).background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
         .help("Claude plan usage as Claude Code's /usage reports it, read every 5 minutes. Click to refresh.")
@@ -1203,23 +1229,26 @@ struct PlanBanner: View {
     if case .failed(let message) = store.planState { return message }
     return store.planState == .signedOut ? "sign in to Claude Code" : "no data"
   }
-  private func pace(_ week: PlanWindow, projected: Double?) -> String {
-    var text = pct(week.used) + " used"
+  private func pace(_ week: PlanWindow, _ forecast: LimitForecast?) -> String {
+    // "% left" is right before it, so the used share isn't repeated.
+    var text = ""
     // The API gives the reset as 05:59:59.555, so round to the minute: "resets Sat 07:00", not 06:59.
     if let reset = week.resetsAt {
       let minute = Date(timeIntervalSince1970: (reset.timeIntervalSince1970 / 60).rounded() * 60)
-      text += " · resets " + PlanBanner.resetFormatter.string(from: minute)
+      text = "resets " + PlanBanner.resetFormatter.string(from: minute)
     }
     if week.used >= 100 { return text + " · limit reached" }
-    guard let projected, let reset = week.resetsAt else { return text }
-    if let out = weekRunsOut(used: week.used, resetsAt: reset, now: now) {
-      return text + " · runs out ~" + PlanBanner.resetFormatter.string(from: out)
-    }
-    return text + " · on pace for " + pct(projected)
+    guard let forecast else { return text }
+    // The last 24 hours win when they are faster than the week so far; say so, since it moves with the day.
+    let basis = forecast.basis == .recent ? " (24 h pace)" : ""
+    if let out = forecast.runsOut { return text + " · runs out ~" + PlanBanner.resetFormatter.string(from: out) + basis }
+    return text + " · on pace for " + pct(forecast.atReset) + basis
   }
-  private func trailing(_ plan: PlanLimits) -> String {
+  private func trailing(_ plan: PlanLimits, five forecast: LimitForecast?) -> String {
     var parts = plan.models.map { "\($0.label) " + pct($0.used) }
-    if let five = plan.fiveHour { parts.append("5-hour " + pct(five.used)) }
+    if let five = plan.fiveHour {
+      parts.append("5-hour " + pct(five.used) + (forecast?.runsOut.map { " · out ~" + PlanBanner.timeFormatter.string(from: $0) } ?? ""))
+    }
     // Old numbers say how old they are: after a failed read, or when no read has worked for 10 minutes.
     if let at = store.planFetched, store.planState != .ok || now.timeIntervalSince(at) > 600 {
       let sameDay = dayFormatter.string(from: at) == dayFormatter.string(from: now)
@@ -1277,6 +1306,18 @@ struct QuickView: View {
         Label("Dnes si #\(rank) v rebríčku všetkých čias", systemImage: "trophy.fill")
           .font(.system(size: 13, weight: .bold)).foregroundStyle(store.festive ? Xmas.gold : orange)
       }
+      if let plan = store.plan, plan.fiveHour != nil || plan.weekly != nil {
+        let f = store.limitForecasts(), now = Date()
+        VStack(alignment: .leading, spacing: 12) {
+          Text("LIMITY CLAUDE").font(.system(size: 11, weight: .heavy)).tracking(0.8).foregroundStyle(muted)
+          if let w = plan.fiveHour {
+            LimitRow(title: "Session (5 h)", used: w.used, line: limitText(w, f.five, now: now, time: slovakClock.string))
+          }
+          if let w = plan.weekly {
+            LimitRow(title: "Týždeň", used: w.used, line: limitText(w, f.week, now: now, time: slovakTime.string))
+          }
+        }.help("Odhad podľa tempa: pri session posledných 45 minút, pri týždni rýchlejšie z tempa celého týždňa a posledných 24 hodín.")
+      }
       Button(action: open) {
         HStack {
           Text("Dashboard"); Spacer(); Image(systemName: "arrow.right")
@@ -1287,6 +1328,24 @@ struct QuickView: View {
     }.padding(22).padding(.top, store.festive ? 18 : 0)
       .overlay(alignment: .top) { if store.festive { Garland() } }
       .frame(width: 340).background(canvas).foregroundStyle(ink).preferredColorScheme(store.colorScheme)
+  }
+}
+// One Claude limit in the quick view: how much is used and, under it, when it runs out or whether it lasts.
+struct LimitRow: View {
+  var title: String; var used: Double; var line: (text: String, mood: LimitMood)
+  var body: some View {
+    let red = Color(red: 0.93, green: 0.33, blue: 0.33), green = Color(red: 0.30, green: 0.74, blue: 0.45)
+    let color: Color = line.mood == .out || line.mood == .runsOut ? red : line.mood == .lasts ? green : muted
+    VStack(alignment: .leading, spacing: 5) {
+      HStack {
+        Text(title).font(.system(size: 14, weight: .medium)); Spacer()
+        Text(String(format: "%.0f %%", used)).font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
+      }
+      Capsule().fill(color.opacity(0.22)).frame(height: 5).overlay(alignment: .leading) {
+        GeometryReader { g in Capsule().fill(color).frame(width: g.size.width * min(used, 100) / 100) }
+      }
+      Text(line.text).font(.system(size: 12, weight: .medium)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+    }
   }
 }
 // Spending more is the goal here. Today's API cost against the same weekday over the last 12 weeks,

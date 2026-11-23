@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.20.0 (2026-11-23)
+
+- When the Claude limits run out. The quick view has a **LIMITY CLAUDE** block with the 5-hour session limit and the weekly limit: what each is at, and either "Dôjde ~15:58, o 1 h 3 min" or "Vydrží do resetu 16:24, skončíš na ~78 %". EJAJ keeps 24 hours of the limit readings it takes every 5 minutes. The session goes by the pace of the last 45 minutes, the week by the faster of the week so far and the last 24 hours.
+- A notification when the session limit would run out within 30 minutes, once per 5-hour window. The weekly "dôjde skôr" warning now uses the same forecast as the banner.
+- The calendar's Claude week banner uses the forecast too and says "(24 h pace)" when the last 24 hours set it. The 5-hour figure gets "out ~16:01". The banner no longer repeats the used share next to "% left", so it fits at the narrowest window.
+- Checked: tests for the readings (replacing, dropping after 24 hours), both paces, readings of an earlier window ignored, the minimum spans, run-out times, the Slovak lines and the session warning, including that 20 session warnings don't push the week's warning out of the log so it isn't sent twice. Renders of the quick view and the banner with sample numbers. A review found that shared log, the week warning disagreeing with the banner, and the run-out time drifting between reads. All three are fixed. Not checked: the forecast against a real session running out, and clicks in the running app.
+
 ## 1.19.0 (2026-11-23)
 
 - Help in the app. Every dashboard tab has a short card on what it shows, and the quick view has one in Slovak. Each card opens by itself the first time you open its tab or the quick view, once, and after that from the **?** button in the toolbar or next to "DNES SI PREJEBAL". The x or Esc closes it. In the quick view the card takes the place of the figures.

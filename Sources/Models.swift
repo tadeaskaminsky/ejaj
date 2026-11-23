@@ -1209,7 +1209,10 @@ func noted(_ n: Notice, in log: NoticeLog) -> NoticeLog {
   var log = log
   switch n.kind {
   case .record(let day): log.recordDay = day
-  case .week(let key): log.week = Array((log.week + [key]).suffix(12))
+  // Session warnings can come several times a day, so they get their own 6 places and never push a week's key out.
+  case .week(let key):
+    let all = log.week + [key], five = { (k: String) in k.hasPrefix("five|") }
+    log.week = Array(all.filter { !five($0) }.suffix(12)) + Array(all.filter(five).suffix(6))
   case .update(let version): log.update = version
   }
   return log
@@ -1230,7 +1233,11 @@ private let slovakDay: DateFormatter = {
 }()
 // The Claude plan's week: a warning when the pace runs out before the reset (from half the limit on), and another at
 // 90 % used. `time` formats a moment, e.g. "so 07:00".
-func weekNotice(used: Double, resetsAt: Date, now: Date, log: NoticeLog, time: (Date) -> String) -> Notice? {
+// `runsOut` is the forecast the banner shows (the faster of the week's and the last 24 hours' pace); without one it
+// goes by the week's pace alone.
+func weekNotice(
+  used: Double, resetsAt: Date, now: Date, log: NoticeLog, runsOut: Date? = nil, time: (Date) -> String
+) -> Notice? {
   guard resetsAt > now else { return nil }
   let week = String(Int((resetsAt.timeIntervalSince1970 / 3600).rounded()))
   if used >= 90, !log.week.contains(week + "|90") {
@@ -1239,13 +1246,22 @@ func weekNotice(used: Double, resetsAt: Date, now: Date, log: NoticeLog, time: (
       body: "Zostáva \(max(0, Int((100 - used).rounded()))) %. Limit sa obnoví \(time(resetsAt)).")
   }
   if used >= 50, used < 90, !log.week.contains(week + "|pace"),
-    let out = weekRunsOut(used: used, resetsAt: resetsAt, now: now)
+    let out = runsOut ?? weekRunsOut(used: used, resetsAt: resetsAt, now: now)
   {
     return Notice(
       kind: .week(week + "|pace"), title: "Claude týždeň dôjde skôr",
       body: "Pri tomto tempe minieš limit okolo \(time(out)), obnoví sa až \(time(resetsAt)). Minuté \(Int(used.rounded())) %.")
   }
   return nil
+}
+// The 5-hour limit about to run out: once per window, when the current pace empties it within 30 minutes.
+func fiveHourNotice(_ f: LimitForecast?, now: Date, log: NoticeLog, time: (Date) -> String) -> Notice? {
+  guard let f, f.used < 100, let out = f.runsOut, out.timeIntervalSince(now) <= 1_800 else { return nil }
+  let key = "five|" + String(Int((f.resetsAt.timeIntervalSince1970 / 3600).rounded()))
+  guard !log.week.contains(key) else { return nil }
+  return Notice(
+    kind: .week(key), title: "Session limit dôjde ~\(time(out))",
+    body: "Minuté \(Int(f.used.rounded())) %. Pri tomto tempe ti zostáva asi \(untilText(out.timeIntervalSince(now))), reset o \(time(f.resetsAt)).")
 }
 func updateNotice(version: String, log: NoticeLog) -> Notice? {
   log.update == version

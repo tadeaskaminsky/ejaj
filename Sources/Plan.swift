@@ -293,3 +293,108 @@ enum ClaudePlan {
     return .failure(.failed("Usage returned HTTP 401"))
   }
 }
+
+// Readings of the plan limits over the last 24 hours, kept across launches, for telling how fast the limits are going
+// right now. Work comes in bursts, so the pace since a window began says little about the next hour.
+struct PlanSample: Codable, Equatable {
+  var at: Date
+  var five: Double? = nil; var fiveReset: Date? = nil
+  var week: Double? = nil; var weekReset: Date? = nil
+}
+// The readings with a new one added: older than 24 hours dropped, and one taken under 4 minutes after the last
+// replacing it, so forced refreshes don't crowd the list.
+func addPlanSample(_ samples: [PlanSample], _ limits: PlanLimits, at now: Date) -> [PlanSample] {
+  var kept = samples.filter { now.timeIntervalSince($0.at) <= 86_400 && $0.at <= now }
+  if let last = kept.last, now.timeIntervalSince(last.at) < 240 { kept.removeLast() }
+  return kept + [
+    PlanSample(
+      at: now, five: limits.fiveHour?.used, fiveReset: limits.fiveHour?.resetsAt, week: limits.weekly?.used,
+      weekReset: limits.weekly?.resetsAt)
+  ]
+}
+enum LimitKind { case fiveHour, weekly }
+// Percentage points per hour over the readings of the last `span`, counting only readings of the same window (the
+// same reset, give or take 10 minutes). nil when they cover less than `minSpan`.
+func recentPace(
+  _ samples: [PlanSample], _ kind: LimitKind, used: Double, resetsAt: Date, now: Date, span: TimeInterval,
+  minSpan: TimeInterval
+) -> Double? {
+  let first = samples.first { s in
+    let (value, reset) = kind == .fiveHour ? (s.five, s.fiveReset) : (s.week, s.weekReset)
+    guard value != nil, let reset, abs(reset.timeIntervalSince(resetsAt)) < 600 else { return false }
+    return s.at >= now.addingTimeInterval(-span) && s.at < now
+  }
+  guard let first, let from = kind == .fiveHour ? first.five : first.week else { return nil }
+  let hours = now.timeIntervalSince(first.at) / 3600
+  guard hours * 3600 >= minSpan else { return nil }
+  return max(0, used - from) / hours
+}
+// Percentage points per hour since the window began. nil until `minElapsed` of it has passed.
+func windowPace(used: Double, resetsAt: Date, length: TimeInterval, now: Date, minElapsed: TimeInterval) -> Double? {
+  let elapsed = length - resetsAt.timeIntervalSince(now)
+  guard elapsed >= minElapsed, elapsed <= length else { return nil }
+  return used / (elapsed / 3600)
+}
+// When a limit runs out at a given pace, or what it ends the window at when it lasts.
+struct LimitForecast: Equatable {
+  enum Basis: Equatable { case recent, window }
+  var used: Double; var resetsAt: Date
+  var runsOut: Date?  // nil: it lasts to the reset
+  var atReset: Double  // percent at the reset at this pace, can pass 100
+  var basis: Basis
+}
+func limitForecast(used: Double, resetsAt: Date, now: Date, pace: Double, basis: LimitForecast.Basis) -> LimitForecast {
+  let hoursLeft = max(0, resetsAt.timeIntervalSince(now) / 3600)
+  if used >= 100 { return LimitForecast(used: used, resetsAt: resetsAt, runsOut: now, atReset: used, basis: basis) }
+  var out: Date? = nil
+  if pace > 0 {
+    let at = now.addingTimeInterval((100 - used) / pace * 3600)
+    if at < resetsAt { out = at }
+  }
+  return LimitForecast(used: used, resetsAt: resetsAt, runsOut: out, atReset: used + pace * hoursLeft, basis: basis)
+}
+// The 5-hour window goes by the last 45 minutes (at least 10 of them read), and falls back to the pace since the
+// window began once 15 minutes of it have passed.
+func fiveHourForecast(_ w: PlanWindow, samples: [PlanSample], now: Date) -> LimitForecast? {
+  guard let reset = w.resetsAt, reset > now else { return nil }
+  if let p = recentPace(samples, .fiveHour, used: w.used, resetsAt: reset, now: now, span: 2_700, minSpan: 600) {
+    return limitForecast(used: w.used, resetsAt: reset, now: now, pace: p, basis: .recent)
+  }
+  guard let p = windowPace(used: w.used, resetsAt: reset, length: 18_000, now: now, minElapsed: 900) else {
+    return w.used >= 100 ? limitForecast(used: w.used, resetsAt: reset, now: now, pace: 0, basis: .window) : nil
+  }
+  return limitForecast(used: w.used, resetsAt: reset, now: now, pace: p, basis: .window)
+}
+// The week goes by whichever is faster: the pace since it began (from 12 hours in) or the last 24 hours (at least 3
+// of them read), so a heavy day warns early rather than late.
+func weeklyForecast(_ w: PlanWindow, samples: [PlanSample], now: Date) -> LimitForecast? {
+  guard let reset = w.resetsAt, reset > now else { return nil }
+  let whole = windowPace(used: w.used, resetsAt: reset, length: 604_800, now: now, minElapsed: 43_200)
+  let recent = recentPace(samples, .weekly, used: w.used, resetsAt: reset, now: now, span: 86_400, minSpan: 10_800)
+  if let recent, recent > (whole ?? 0) {
+    return limitForecast(used: w.used, resetsAt: reset, now: now, pace: recent, basis: .recent)
+  }
+  guard let whole else {
+    return w.used >= 100 ? limitForecast(used: w.used, resetsAt: reset, now: now, pace: 0, basis: .window) : nil
+  }
+  return limitForecast(used: w.used, resetsAt: reset, now: now, pace: whole, basis: .window)
+}
+// "1 h 10 min", "25 min", "2 d 4 h": how long until something, for the quick view.
+func untilText(_ seconds: TimeInterval) -> String {
+  let minutes = max(1, Int((seconds / 60).rounded()))
+  if minutes < 60 { return "\(minutes) min" }
+  if minutes < 1_440 { return "\(minutes / 60) h" + (minutes % 60 == 0 ? "" : " \(minutes % 60) min") }
+  return "\(minutes / 1_440) d" + (minutes % 1_440 / 60 == 0 ? "" : " \(minutes % 1_440 / 60) h")
+}
+// The Slovak line under a limit in the quick view, and how it is going. `time` writes a moment ("14:20", "št 18:00").
+enum LimitMood: Equatable { case out, runsOut, lasts, unknown }
+func limitText(_ w: PlanWindow, _ f: LimitForecast?, now: Date, time: @escaping (Date) -> String) -> (text: String, mood: LimitMood) {
+  guard let reset = w.resetsAt, reset > now else { return ("Čakám na nové čísla po resete.", .unknown) }
+  let minute = { (d: Date) in time(Date(timeIntervalSince1970: (d.timeIntervalSince1970 / 60).rounded() * 60)) }
+  if w.used >= 100 { return ("Minuté. Reset \(minute(reset)), o \(untilText(reset.timeIntervalSince(now))).", .out) }
+  guard let f else { return ("Na odhad je ešte priskoro. Reset \(minute(reset)).", .unknown) }
+  if let out = f.runsOut {
+    return ("Dôjde ~\(minute(out)), o \(untilText(out.timeIntervalSince(now))). Reset až \(minute(reset)).", .runsOut)
+  }
+  return ("Vydrží do resetu \(minute(reset)), skončíš na ~\(Int(min(f.atReset, 100).rounded())) %.", .lasts)
+}

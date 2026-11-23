@@ -711,7 +711,80 @@ import Foundation
     precondition(weekRunsOut(used: 10, resetsAt: reset, now: dayIn) == nil)
     precondition(weekRunsOut(used: 0, resetsAt: reset, now: dayIn) == nil)
     precondition(weekRunsOut(used: 90, resetsAt: reset, now: reset.addingTimeInterval(-604_800 + 3_600)) == nil)
-    print("PASS: plan usage parsing, clamping, week elapsed, projection and runs-out time")
+    // Forecasts. A 5-hour window resetting at 15:00, read from 12:00 on.
+    do {
+      let t0 = Date(timeIntervalSince1970: 1_800_000_000), reset5 = t0.addingTimeInterval(3 * 3600)
+      let resetW = t0.addingTimeInterval(3 * 86_400)
+      func limits(_ five: Double, _ week: Double) -> PlanLimits {
+        PlanLimits(
+          fiveHour: PlanWindow(label: "5-hour", used: five, resetsAt: reset5),
+          weekly: PlanWindow(label: "Weekly", used: week, resetsAt: resetW))
+      }
+      // Readings 5 minutes apart: 20 % -> 50 % in 30 minutes is 60 points an hour.
+      var samples: [PlanSample] = []
+      for i in 0...6 { samples = addPlanSample(samples, limits(20 + Double(i) * 5, 40), at: t0.addingTimeInterval(Double(i) * 300)) }
+      precondition(samples.count == 7)
+      // A forced read 2 minutes later replaces the last one; readings over 24 hours old are dropped.
+      let crowded = addPlanSample(samples, limits(51, 40), at: t0.addingTimeInterval(1_920))
+      precondition(crowded.count == 7 && crowded.last?.five == 51)
+      precondition(addPlanSample(samples, limits(0, 0), at: t0.addingTimeInterval(90_000)).count == 1)
+      let now = t0.addingTimeInterval(1_800)
+      let five = fiveHourForecast(PlanWindow(label: "5-hour", used: 50, resetsAt: reset5), samples: samples, now: now)!
+      precondition(five.basis == .recent && five.runsOut == now.addingTimeInterval(3_000))
+      // Idle for the last 45 minutes: it lasts, and ends where it is.
+      let idle = (0...9).reduce([PlanSample]()) { addPlanSample($0, limits(50, 40), at: t0.addingTimeInterval(Double($1) * 300)) }
+      let calm = fiveHourForecast(PlanWindow(label: "5-hour", used: 50, resetsAt: reset5), samples: idle, now: t0.addingTimeInterval(2_700))!
+      precondition(calm.runsOut == nil && calm.atReset == 50)
+      // Readings of an earlier window don't count: without fresh ones it goes by the window, 2.5 h in at 40 % (16 an hour).
+      let old = samples.map { s -> PlanSample in var s = s; s.fiveReset = reset5.addingTimeInterval(-18_000); return s }
+      let byWindow = fiveHourForecast(PlanWindow(label: "5-hour", used: 40, resetsAt: reset5), samples: old, now: now)!
+      precondition(byWindow.basis == .window && byWindow.runsOut == nil && abs(byWindow.atReset - 80) < 1e-9)
+      // Under 15 minutes into a window there is no forecast; at 100 % it has run out.
+      let fresh = PlanWindow(label: "5-hour", used: 5, resetsAt: t0.addingTimeInterval(18_000 - 600))
+      precondition(fiveHourForecast(fresh, samples: [], now: t0) == nil)
+      precondition(fiveHourForecast(PlanWindow(label: "5-hour", used: 100, resetsAt: reset5), samples: [], now: t0)?.runsOut == t0)
+      // The week: 4 days in at 40 % (10 a day) lasts to the reset at 70 %. A 24-hour pace of 1 point an hour runs it
+      // out after 60 more hours, before the reset 72 hours away, so the faster recent pace wins.
+      let week = PlanWindow(label: "Weekly", used: 40, resetsAt: resetW)
+      let slow = weeklyForecast(week, samples: [], now: t0)!
+      precondition(slow.basis == .window && slow.runsOut == nil && abs(slow.atReset - 70) < 1e-6)
+      let day = [PlanSample(at: t0.addingTimeInterval(-14_400), week: 36, weekReset: resetW)]
+      let fast = weeklyForecast(week, samples: day, now: t0)!
+      precondition(fast.basis == .recent && fast.runsOut == t0.addingTimeInterval(60 * 3600))
+      // Under 3 hours of readings don't count for the week.
+      let short = [PlanSample(at: t0.addingTimeInterval(-3_600), week: 30, weekReset: resetW)]
+      precondition(weeklyForecast(week, samples: short, now: t0)?.basis == .window)
+      precondition(untilText(1_500) == "25 min" && untilText(4_200) == "1 h 10 min" && untilText(7_200) == "2 h")
+      precondition(untilText(187_200) == "2 d 4 h" && untilText(10) == "1 min")
+      let hhmm = { (d: Date) in String(Int(d.timeIntervalSince(t0) / 60)) }
+      let w50 = PlanWindow(label: "5-hour", used: 50, resetsAt: reset5)
+      precondition(limitText(w50, five, now: now, time: hhmm) == ("Dôjde ~80, o 50 min. Reset až 180.", .runsOut))
+      precondition(limitText(w50, calm, now: now, time: hhmm).mood == .lasts && limitText(w50, calm, now: now, time: hhmm).text.hasSuffix("~50 %."))
+      precondition(limitText(PlanWindow(label: "5-hour", used: 100, resetsAt: reset5), nil, now: now, time: hhmm).mood == .out)
+      precondition(limitText(w50, nil, now: now, time: hhmm).mood == .unknown && limitText(w50, nil, now: reset5, time: hhmm).mood == .unknown)
+      // Runs out in 50 minutes: no warning yet. 10 minutes later at 60 %, 40 minutes are left, still none; at 80 %
+      // with 20 minutes left it warns once for this window.
+      precondition(fiveHourNotice(five, now: now, log: NoticeLog(), time: hhmm) == nil)
+      let soon = limitForecast(used: 80, resetsAt: reset5, now: now, pace: 60, basis: .recent)
+      let warn = fiveHourNotice(soon, now: now, log: NoticeLog(), time: hhmm)!
+      precondition(warn.title == "Session limit dôjde ~50" && warn.body.contains("asi 20 min"))
+      precondition(fiveHourNotice(soon, now: now, log: noted(warn, in: NoticeLog()), time: hhmm) == nil)
+      // Twenty session warnings don't push a week's key out of the log.
+      var crowdedLog = noted(Notice(kind: .week("123|pace"), title: "", body: ""), in: NoticeLog())
+      for i in 0..<20 { crowdedLog = noted(Notice(kind: .week("five|\(i)"), title: "", body: ""), in: crowdedLog) }
+      precondition(crowdedLog.week.contains("123|pace") && crowdedLog.week.count == 7 && crowdedLog.week.last == "five|19")
+      // The week warning follows the banner's forecast when it is given one.
+      let early = t0.addingTimeInterval(7_200)
+      let paced = weekNotice(used: 60, resetsAt: resetW, now: t0, log: NoticeLog(), runsOut: early, time: hhmm)!
+      precondition(paced.body.contains("okolo 120,"))
+      // A reading over 45 minutes old doesn't set the session pace; it goes by the window instead.
+      let stale = [PlanSample(at: now.addingTimeInterval(-3_000), five: 10, fiveReset: reset5)]
+      precondition(fiveHourForecast(w50, samples: stale, now: now)?.basis == .window)
+      // Readings under 10 minutes apart don't either.
+      let close = [PlanSample(at: now.addingTimeInterval(-300), five: 45, fiveReset: reset5)]
+      precondition(fiveHourForecast(w50, samples: close, now: now)?.basis == .window)
+    }
+    print("PASS: plan usage parsing, clamping, week elapsed, projection and runs-out time, limit forecasts")
 
     let stored = Data(
       #"""
