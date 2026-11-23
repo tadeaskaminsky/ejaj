@@ -810,6 +810,23 @@ import Foundation
     let update = updateNotice(version: "1.15.0", log: NoticeLog())!
     precondition(update.title == "EJAJ 1.15.0 je vonku" && updateNotice(version: "1.15.0", log: noted(update, in: NoticeLog())) == nil)
     print("PASS: record, Claude week and update notifications, each once")
+    // Records: dearest days first, a tie goes to more tokens and then the later day, unpriced rows flag the day.
+    func row(_ date: String, _ input: Int, model: String = "claude-opus-5") -> UsageRow {
+      UsageRow(date: date, provider: "claude", model: model, source: "test", input: input)
+    }
+    let unit = row("2026-11-01", 1_000_000).cost!
+    precondition(unit > 0)
+    let dayRows = [
+      row("2026-11-01", 1_000_000), row("2026-11-02", 3_000_000), row("2026-11-03", 2_000_000),
+      row("2026-11-03", 1_000_000), row("2026-11-04", 500, model: "mystery-model"),
+      row("2026-11-05", 1_000_000), row("2026-11-05", 7, model: "mystery-model"),
+      row("2026-11-06", 500_000), row("2026-11-06", 9, model: "mystery-model"), row("2026-11-07", 500_000),
+    ]
+    let top = topDays(dayRows)
+    precondition(top.map(\.day) == ["2026-11-03", "2026-11-02", "2026-11-05", "2026-11-01", "2026-11-06", "2026-11-07"])
+    precondition(top[0].tokens == 3_000_000 && !top[0].unpriced && top[2].unpriced && top[2].tokens == 1_000_007)
+    precondition(topDays(dayRows, limit: 2).map(\.day) == ["2026-11-03", "2026-11-02"] && topDays([]).isEmpty)
+    print("PASS: records keep the dearest days, ties by tokens, days without a price left out")
 
     // Wrapped 2026: Opus 5 at $5 input. Rows from 2025 and 2027 stay out.
     func r(_ date: String, _ provider: String, _ model: String, _ input: Int, hour: Int? = nil) -> UsageRow {

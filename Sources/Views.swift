@@ -928,7 +928,7 @@ struct CalendarPanel: View {
     Panel {
       VStack(alignment: .leading, spacing: 14) {
         HStack(spacing: 10) {
-          Text("Calendar").font(.system(size: 14, weight: .semibold))
+          Text("Calendar").font(.system(size: 16, weight: .semibold))
           Spacer()
           // Back to today, shown only once you have moved away from it.
           if monthKey != today.prefix(7) || selected != today {
@@ -941,7 +941,7 @@ struct CalendarPanel: View {
           } label: {
             Image(systemName: "chevron.left")
           }.buttonStyle(ChipStyle()).help("Previous month")
-          Text(CalendarPanel.monthFormatter.string(from: month)).font(.system(size: 13, weight: .semibold))
+          Text(CalendarPanel.monthFormatter.string(from: month)).font(.system(size: 15, weight: .semibold))
             .frame(width: 124)
           Button {
             month = cal.date(byAdding: .month, value: 1, to: month)!
@@ -952,9 +952,9 @@ struct CalendarPanel: View {
         PlanBanner(store: store)
         LazyVGrid(columns: columns, spacing: 6) {
           ForEach(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], id: \.self) { d in
-            Text(d).font(.system(size: 10, weight: .medium)).foregroundStyle(muted)
+            Text(d).font(.system(size: 12, weight: .medium)).foregroundStyle(muted)
           }
-          ForEach(-leading..<0, id: \.self) { _ in Color.clear.frame(height: 58) }
+          ForEach(-leading..<0, id: \.self) { _ in Color.clear.frame(height: 68) }
           ForEach(1...days, id: \.self) { d in
             let key = monthKey + String(format: "-%02d", d)
             dayCell(
@@ -963,7 +963,7 @@ struct CalendarPanel: View {
           }
         }
         if totals.contains(where: { $0.key.hasPrefix(monthKey) && $0.value.unpriced }) {
-          Text("* includes tokens of unpriced models").font(.system(size: 10)).foregroundStyle(muted)
+          Text("* includes tokens of unpriced models").font(.system(size: 11)).foregroundStyle(muted)
         }
         Divider().opacity(0.5)
         let costs = totals.mapValues(\.cost)
@@ -987,23 +987,23 @@ struct CalendarPanel: View {
     } label: {
       VStack(alignment: .leading, spacing: 0) {
         HStack(spacing: 4) {
-          Text(String(d)).font(.system(size: 11, weight: isToday ? .bold : .medium).monospacedDigit())
+          Text(String(d)).font(.system(size: 13, weight: isToday ? .bold : .medium).monospacedDigit())
             .foregroundStyle(isToday ? (store.festive ? .white : canvas) : future ? muted.opacity(0.45) : (total == nil ? muted : ink))
-            .padding(.horizontal, isToday ? 5 : 0).frame(minWidth: isToday ? 20 : nil, minHeight: 18)
+            .padding(.horizontal, isToday ? 5 : 0).frame(minWidth: isToday ? 24 : nil, minHeight: 20)
             .background { if isToday { Capsule().fill(store.festive ? Xmas.red : ink) } }
           Spacer(minLength: 0)
           if store.festive, key.hasSuffix("-12-24") {
-            Image(systemName: "gift.fill").font(.system(size: 9)).foregroundStyle(Xmas.red)
+            Image(systemName: "gift.fill").font(.system(size: 11)).foregroundStyle(Xmas.red)
           }
           if top {
-            Image(systemName: store.festive ? "star.fill" : "flame.fill").font(.system(size: 9))
+            Image(systemName: store.festive ? "star.fill" : "flame.fill").font(.system(size: 11))
               .foregroundStyle(store.festive ? Xmas.gold : orange)
           }
         }
         Spacer(minLength: 0)
         if let total {
           Text(store.money(total.cost) + (total.unpriced ? "*" : ""))
-            .font(.system(size: 12, weight: ratio > 0.6 ? .semibold : .regular, design: .rounded).monospacedDigit())
+            .font(.system(size: 16, weight: ratio > 0.6 ? .semibold : .regular, design: .rounded).monospacedDigit())
             .foregroundStyle(ink).lineLimit(1).minimumScaleFactor(0.7)
         }
         if store.provider == "all", parts.count > 1 {
@@ -1016,7 +1016,7 @@ struct CalendarPanel: View {
             }
           }.frame(height: 3).padding(.top, 4)
         }
-      }.padding(8).frame(maxWidth: .infinity, alignment: .leading).frame(height: 58)
+      }.padding(8).frame(maxWidth: .infinity, alignment: .leading).frame(height: 68)
         .background(fill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay {
           RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(
@@ -1041,7 +1041,7 @@ struct CalendarPanel: View {
     let both = store.provider == "all"
     let title = dayFormatter.date(from: date).map(CalendarPanel.dayFormatterLong.string) ?? date
     HStack(spacing: 16) {
-      Text(title).font(.system(size: 13, weight: .semibold))
+      Text(title).font(.system(size: 15, weight: .semibold))
       Spacer()
       if let total {
         if both {
@@ -1052,10 +1052,10 @@ struct CalendarPanel: View {
             }
           }
         }
-        Text(store.money(total.cost)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+        Text(store.money(total.cost)).font(.system(size: 15, weight: .semibold)).monospacedDigit()
         Text(exact(total.tokens) + " tokens").foregroundStyle(muted).monospacedDigit()
       }
-    }.font(.system(size: 12))
+    }.font(.system(size: 13))
     if total != nil, let a = average {
       AverageBanner(
         title: "Day", ratio: a.ratio, level: a.level,
@@ -1073,7 +1073,7 @@ struct CalendarPanel: View {
             : CalendarPanel.shortDay.string(from: start) + " – " + CalendarPanel.shortDay.string(from: end)),
         ratio: w.ratio, level: w.level,
         detail: store.money(w.cost) + ", " + difference(w.difference, w.percent) + " vs the average \(w.span)",
-        trailing: "Average week: " + store.money(w.fullAverage) + " · \(w.weeks) \(w.weeks == 1 ? "week" : "weeks")")
+        trailing: "Avg " + store.money(w.fullAverage) + " · \(w.weeks) \(w.weeks == 1 ? "week" : "weeks")")
     }
     if hourly.isEmpty {
       Text(rows.isEmpty ? "No usage on this day" : "No hourly data for this day yet, refresh to collect it")
@@ -1101,7 +1101,7 @@ struct AverageBanner: View {
       Text(detail).foregroundStyle(ink).monospacedDigit().layoutPriority(1)
       Spacer(minLength: 12)
       Text(trailing).foregroundStyle(muted).monospacedDigit()
-    }.font(.system(size: 12)).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
+    }.font(.system(size: 13)).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
       .background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
   }
 }
@@ -1138,7 +1138,7 @@ struct PlanBanner: View {
         Text(pace(week, projected: projected)).foregroundStyle(ink).layoutPriority(1)
         Spacer(minLength: 12)
         Text(trailing(plan)).foregroundStyle(muted)
-      }.font(.system(size: 12).monospacedDigit()).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12)
+      }.font(.system(size: 13).monospacedDigit()).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12)
         .padding(.vertical, 8).background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
         .help("Claude plan usage as Claude Code's /usage reports it, read every 5 minutes. Click to refresh.")
         .onTapGesture { store.refreshPlan(force: true) }
@@ -1148,7 +1148,7 @@ struct PlanBanner: View {
         Text("Claude week").fontWeight(.semibold)
         Text(note)
         Spacer(minLength: 0)
-      }.font(.system(size: 12)).foregroundStyle(muted).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
+      }.font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
         .background(ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
         .onTapGesture { store.refreshPlan(force: true) }
     }
@@ -1269,7 +1269,7 @@ func dayVerdict(_ rows: [UsageRow], money: (Double) -> String) -> (text: String,
   }
   guard let avg else { return ("Zatiaľ nemám s čím porovnať", "questionmark.circle", muted) }
   let ratio = now / avg
-  if ratio >= 1.5 { return ("Už to vyzerá dobre." + diff(avg), "flame.fill", green) }
+  if ratio >= 1.5 { return ("Už prejebávaš celkom dosť, vyzerá to fajn." + diff(avg), "flame.fill", green) }
   if ratio > 1.1 { return ("Už prejebávaš celkom dosť, vyzerá to fajn." + diff(avg), "arrow.up.right", green) }
   if ratio >= 0.9 { return ("Celkom popiči, ale limit povolí viac." + diff(avg), "equal.circle.fill", blue) }
   if ratio >= 0.5 { return ("Zatiaľ si prejebal dosť málo, zamakaj." + diff(avg), "arrow.down.right", orange) }
@@ -1292,7 +1292,7 @@ struct Dashboard: View {
   }()
   static let tabs: [(value: String, label: String, dot: Color?)] = [
     ("overview", "Overview", nil), ("calendar", "Calendar", nil), ("projects", "Projects", nil),
-    ("sessions", "Sessions", nil), ("patterns", "Patterns", nil),
+    ("sessions", "Sessions", nil), ("records", "Records", nil), ("patterns", "Patterns", nil),
   ]
   private static let readableDay: DateFormatter = {
     let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; f.locale = Locale(identifier: "en_US")
@@ -1339,7 +1339,7 @@ struct Dashboard: View {
           if tab == "calendar" {
             PillPicker(selection: $costMode, options: [(false, "Tokens", nil), (true, "Cost", nil)])
               .help("What the day's hourly chart measures")
-          } else {
+          } else if tab != "records" {
           PillPicker(
             selection: $store.days,
             options: [(1, "Today", nil), (7, "7 days", nil), (30, "30 days", nil), (90, "90 days", nil), (0, "All time", nil)])
@@ -1357,7 +1357,7 @@ struct Dashboard: View {
           Text(r.text).font(.system(size: 11)).foregroundStyle(r.failed ? orange : muted).lineLimit(2).textSelection(
             .enabled)
         }
-        if store.days == 0, tab != "calendar", let from = store.countFrom {
+        if (store.days == 0 && tab != "calendar") || tab == "records", let from = store.countFrom {
           Text("All time starts on \(Dashboard.readable(from)), as Count from in the gear menu says.")
             .font(.system(size: 11)).foregroundStyle(muted)
         }
@@ -1365,6 +1365,7 @@ struct Dashboard: View {
         case "calendar": CalendarPanel(store: store, costMode: costMode)
         case "projects": ProjectsView(store: store)
         case "sessions": SessionsView(store: store)
+        case "records": RecordsView(store: store)
         case "patterns": PatternsView(store: store)
         default: overview(rows: rows, both: both)
         }
@@ -1776,6 +1777,8 @@ struct SessionTable: View {
 struct SessionDetail: View {
   @ObservedObject var store: UsageStore
   var s: SessionTotal
+  // The one day the rows were cut to, as the Records tab opens a session: "16 Nov 2026". nil follows the range.
+  var day: String? = nil
   var body: some View {
     let split = breakdown(s.rows), info = s.session
     VStack(alignment: .leading, spacing: 4) {
@@ -1789,7 +1792,8 @@ struct SessionDetail: View {
     }
     HStack(spacing: 16) {
       Total(
-        title: "API cost" + (store.days == 0 ? "" : " · " + rangeText(store.days)), value: store.money(s.cost),
+        title: "API cost" + (day.map { " · " + $0 } ?? (store.days == 0 ? "" : " · " + rangeText(store.days))),
+        value: store.money(s.cost),
         subtitle: store.usdLine(s.cost), parts: [], note: unpricedNote(s.rows), details: costDetails(split, store.money))
       Total(title: "Tokens", value: exact(s.tokens), parts: [], details: tokenDetails(split))
       Total(
@@ -1801,11 +1805,124 @@ struct SessionDetail: View {
           ("Folder", info.folder ?? info.project),
         ])
     }.fixedSize(horizontal: false, vertical: true)
-    if store.days != 0, s.rows.count < info.rows.count {
+    if let day, s.rows.count < info.rows.count {
+      Text("Counts only the part of the session on \(day). The Sessions tab shows the whole session.")
+        .font(.system(size: 11)).foregroundStyle(muted)
+    } else if day == nil, store.days != 0, s.rows.count < info.rows.count {
       Text("Counts only the part of the session in the \(rangeText(store.days)). All time shows the whole session.")
         .font(.system(size: 11)).foregroundStyle(muted)
     }
     ModelPanel(store: store, rows: s.rows)
+  }
+}
+// The Records tab: the ten dearest days. A day opens the sessions that spent it, and a session opens its part of
+// that day. Like the calendar it ignores the range, but not Count from.
+struct RecordsView: View {
+  @ObservedObject var store: UsageStore
+  @ViewState private var day: String?
+  @ViewState private var session: String?
+  init(store: UsageStore, day: String? = nil, session: String? = nil) {
+    self.store = store; _day = ViewState(initialValue: day); _session = ViewState(initialValue: session)
+  }
+  private static let weekday: DateFormatter = {
+    let f = DateFormatter(); f.dateFormat = "EEEE"; f.locale = Locale(identifier: "en_US")
+    f.timeZone = dayFormatter.timeZone; return f
+  }()
+  var body: some View {
+    let rows = store.allRows(provider: store.provider), records = topDays(rows)
+    VStack(alignment: .leading, spacing: 16) {
+      if let day, let rank = records.firstIndex(where: { $0.day == day }) {
+        let name = Dashboard.readable(day)
+        let sessions = store.sessions.map {
+          totalsBySession($0, from: day, through: day, provider: store.provider)
+        }
+        if let s = sessions?.first(where: { $0.id == session }) {
+          Breadcrumb(
+            trail: [("Records", { self.day = nil; session = nil }), (name, { session = nil })],
+            current: sessionTitle(s.session))
+          SessionDetail(store: store, s: s, day: name)
+        } else {
+          Breadcrumb(trail: [("Records", { self.day = nil })], current: "#\(rank + 1) · " + name)
+          dayDetail(records[rank], rows: rows.filter { $0.date == day }, sessions: sessions)
+        }
+      } else {
+        // A day that left the top 10 (another platform, a later Count from) mustn't open again on its own.
+        list(records).onAppear { day = nil; session = nil }
+      }
+    }
+  }
+  private func dayName(_ day: String) -> String {
+    let date = dayFormatter.date(from: day)
+    return (date.map(RecordsView.weekday.string) ?? "") + " " + Dashboard.readable(day)
+  }
+  @ViewBuilder private func list(_ records: [DayRecord]) -> some View {
+    let maxCost = records.first?.cost ?? 0, today = dayFormatter.string(from: Date())
+    Panel {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 8) {
+          Image(systemName: "trophy").foregroundStyle(muted)
+          Text("Records").font(.system(size: 14, weight: .semibold))
+          Spacer()
+          Text("The \(records.count) most expensive \(records.count == 1 ? "day" : "days") · all time")
+            .font(.system(size: 11)).foregroundStyle(muted)
+        }.padding(.bottom, 6)
+        if records.isEmpty { EmptyNote(text: "No priced usage yet") }
+        ForEach(Array(records.enumerated()), id: \.element.day) { i, r in
+          ClickRow(action: { day = r.day; session = nil }) {
+            HStack(spacing: 16) {
+              Text("#\(i + 1)").font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(i == 0 ? (store.festive ? Xmas.gold : orange) : i < 3 ? ink : muted)
+                .frame(width: 34, alignment: .leading)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(dayName(r.day)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(compact(r.tokens) + " tokens" + (r.day == today ? " · today" : ""))
+                  .font(.system(size: 11).monospacedDigit()).foregroundStyle(muted).lineLimit(1)
+              }.frame(width: 230, alignment: .leading)
+              ShareBar(ratio: maxCost > 0 ? r.cost / maxCost : 0)
+              Text(store.money(r.cost) + (r.unpriced ? "*" : ""))
+                .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
+                .frame(width: 110, alignment: .trailing)
+              Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(muted)
+            }
+          }
+        }
+        if records.contains(where: \.unpriced) { UnpricedFootnote() }
+      }
+    }
+  }
+  @ViewBuilder private func dayDetail(_ r: DayRecord, rows: [UsageRow], sessions: [SessionTotal]?) -> some View {
+    let split = breakdown(rows)
+    Text(dayName(r.day)).font(.system(size: 20, weight: .semibold))
+    HStack(spacing: 16) {
+      Total(
+        title: "API cost", value: store.money(r.cost), subtitle: store.usdLine(r.cost), parts: [],
+        note: unpricedNote(rows), details: costDetails(split, store.money))
+      Total(title: "Tokens", value: exact(r.tokens), parts: [], details: tokenDetails(split))
+      Total(
+        title: "Sessions", value: exact(sessions?.count ?? 0), parts: [],
+        details: [("Requests", exact(rows.reduce(0) { $0 + $1.requests }))]
+          + (sessions?.max { $0.cost < $1.cost }.map { [("Dearest session", store.money($0.cost))] } ?? []))
+    }.fixedSize(horizontal: false, vertical: true)
+    if let sessions {
+      Panel {
+        VStack(alignment: .leading, spacing: 6) {
+          Text("Sessions that day").font(.system(size: 14, weight: .semibold)).padding(.bottom, 4)
+          if sessions.isEmpty {
+            EmptyNote(text: "No session logs left for this day")
+          } else {
+            SessionTable(store: store, sessions: sessions, showProject: true) { session = $0 }
+          }
+          // Usage without a session id counts in the day but in no session.
+          let missing = r.cost - sessions.reduce(0) { $0 + $1.cost }
+          if missing >= 0.005 {
+            Text(store.money(missing) + " of this day isn't in any session log EJAJ still reads.")
+              .font(.system(size: 11)).foregroundStyle(muted).padding(.top, 4)
+          }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+      }
+    } else {
+      NoSessions(store: store)
+    }
   }
 }
 struct NoSessions: View {

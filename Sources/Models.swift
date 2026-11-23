@@ -143,6 +143,21 @@ func totalsBySession(_ sessions: [SessionUsage], from: String?, through: String,
       requests: rows.reduce(0) { $0 + $1.requests }, unpriced: rows.contains { $0.cost == nil })
   }
 }
+// The dearest days, for the Records tab: most expensive first, more tokens first on a tie, then the later day.
+// Days without any priced cost are left out.
+struct DayRecord: Equatable { var day: String; var cost = 0.0; var tokens = 0; var unpriced = false }
+func topDays(_ rows: [UsageRow], limit: Int = 10) -> [DayRecord] {
+  var byDay: [String: DayRecord] = [:]
+  for r in rows {
+    var d = byDay[r.date] ?? DayRecord(day: r.date); d.tokens += r.tokens
+    if let c = r.cost { d.cost += c } else { d.unpriced = true }
+    byDay[r.date] = d
+  }
+  let sorted = byDay.values.filter { $0.cost > 0 }.sorted {
+    $0.cost != $1.cost ? $0.cost > $1.cost : $0.tokens != $1.tokens ? $0.tokens > $1.tokens : $0.day > $1.day
+  }
+  return Array(sorted.prefix(limit))
+}
 // Sessions grouped by project name, most expensive first. Two folders with the same name count as one project.
 struct ProjectTotal: Identifiable {
   var name: String; var folders: [String] = []; var sessions: [SessionTotal] = []

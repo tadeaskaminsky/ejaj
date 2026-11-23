@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.17.0 (2026-11-23)
+
+- **Records**, a new tab with the ten most expensive days. Click a day to see what each session spent on it. Then click a session to see its cost, tokens and models for that day alone. If part of the day's cost belongs to no session, a line says how much.
+- Days well above average now get the same line in the quick view as days a little above it: "Už prejebávaš celkom dosť, vyzerá to fajn."
+- Bigger type in the calendar: 16 pt day amounts in taller cells, larger day numbers, weekday names, header, day summary and banners. The week banner's average is now "Avg €X · N weeks", so it fits at the narrowest window.
+- Checked: a test for the record days (order, ties by tokens, unpriced days), the build and all tests. Renders of the Records list, a day and a session from this Mac's data. The sessions of the top day add up to its total. Calendar renders at 880 pt, with and without the plan banner. A review with correctness, tests and silent-failure lenses found only Low items. Three were fixed: a day that left the top 10 reopened by itself, no note when sessions add up to less than the day, and the token tie-break untested. Not checked: clicks in the running app. The quick-view lines and the Records screens have no test of their own.
+
 ## 1.16.2 (2026-11-23)
 
 - New lines in the quick view's verdict under today's amount, for every kind of day: nothing spent, well under, under, about and over the average, and a record. Each one now also says how far today is from the average, in money and in percent ("+4,20 € (+35 %) oproti priemernému pondelku"). The thresholds and the average are the same as before, and the verdict can now take three lines instead of two.

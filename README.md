@@ -43,7 +43,7 @@ The data refreshes every 30 seconds. The first scan of a long history can take a
 
 ### 3. The dashboard
 
-The switch next to the EJAJ mark picks the tab: **Overview**, **Calendar**, **Projects**, **Sessions** or **Patterns**. The window remembers the last one. On the right are Refresh (hover it to see when the logs were last read), the gear menu and Archive.
+The switch next to the EJAJ mark picks the tab: **Overview**, **Calendar**, **Projects**, **Sessions**, **Records** or **Patterns**. The window remembers the last one. On the right are Refresh (hover it to see when the logs were last read), the gear menu and Archive.
 
 The two pickers under it decide what every tab shows. **Platform** is All, Claude or Codex. **Range** is Today, 7, 30 or 90 days, or All time. The Calendar tab moves by month, so it has no Range picker.
 
@@ -70,7 +70,7 @@ Click a day to see its totals per tool, its hour-by-hour chart and two banners:
 
 Both banners use the same scale. Way above average is 1.5x or more, Above is over 1.1x, Average is 0.9x to 1.1x, Below is 0.5x to 0.9x, and Way below is anything less. Days and weeks with no cost at all are left out of the averages. The Platform picker applies to the calendar too, so with Claude selected you compare Claude with Claude.
 
-### 5. Projects, Sessions and Patterns
+### 5. Projects, Sessions, Records and Patterns
 
 **Projects** lists what each project cost in the chosen range and platform, most expensive first. A bar shows how it compares with the top project. Under each name you see how many sessions it had and how many tokens they used. Hover a row to see the project's folder.
 
@@ -83,6 +83,8 @@ A session is one Claude Code conversation with its subagents, or one Codex threa
 Titles are the ones you see in the apps: the name you gave a Claude Code session or else the one it generated, and the Codex thread name. Codex threads without a name show as "Untitled" with the start of their id. With a range other than All time, a session that started earlier counts only its days inside the range, and its page says so. A `*` next to a cost means it leaves out tokens of models without a price.
 
 **Sessions** starts with **Running now**: every session that sent a request in the last 10 minutes, with what it cost today, and for a session that started on an earlier day also what it cost in total. Running now ignores the range picker. Under it are the range's record sessions (most expensive, most requests, most tokens), and then every session across projects in one table with its project. Type in the search field to find sessions by title or project. A click on any of them opens the session.
+
+**Records** lists the ten most expensive days, with each day's tokens. It ignores the range picker, which is hidden there, but starts at Count from like everything else. The Claude and Codex switch still applies. Click a day for its cost, tokens and a table of the sessions that ran that day, each with only what it cost that day. If part of the day's cost belongs to no session, a line under the table says how much. Click a session to see its breakdown for that day alone. The Sessions tab shows the whole session.
 
 **Patterns** shows when in the week the money goes. Each square is one hour of a weekday, darker for more spent in the chosen range. On the right is each weekday's total, and under the grid each hour's total. Hover a square for its cost, the average for one such day, its tokens and requests. With Today chosen, Patterns shows only today instead: one larger tile per hour with its cost written in, the current hour ringed and the hours still to come outlined.
 
