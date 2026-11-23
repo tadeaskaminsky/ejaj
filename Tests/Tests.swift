@@ -822,11 +822,30 @@ import Foundation
       row("2026-11-05", 1_000_000), row("2026-11-05", 7, model: "mystery-model"),
       row("2026-11-06", 500_000), row("2026-11-06", 9, model: "mystery-model"), row("2026-11-07", 500_000),
     ]
-    let top = topDays(dayRows)
-    precondition(top.map(\.day) == ["2026-11-03", "2026-11-02", "2026-11-05", "2026-11-01", "2026-11-06", "2026-11-07"])
+    let top = topPeriods(dayRows)
+    precondition(top.map(\.from) == ["2026-11-03", "2026-11-02", "2026-11-05", "2026-11-01", "2026-11-06", "2026-11-07"])
     precondition(top[0].tokens == 3_000_000 && !top[0].unpriced && top[2].unpriced && top[2].tokens == 1_000_007)
-    precondition(topDays(dayRows, limit: 2).map(\.day) == ["2026-11-03", "2026-11-02"] && topDays([]).isEmpty)
-    print("PASS: records keep the dearest days, ties by tokens, days without a price left out")
+    precondition(topPeriods(dayRows, limit: 2).map(\.from) == ["2026-11-03", "2026-11-02"] && topPeriods([]).isEmpty)
+    precondition(top.allSatisfy { $0.from == $0.through })
+    // Weeks run Monday to Sunday in Bratislava, months from the 1st to the last day, across years too.
+    precondition(period(of: "2026-11-23", .week) == ("2026-11-23", "2026-11-29"))
+    precondition(period(of: "2026-11-22", .week) == ("2026-11-16", "2026-11-22"))
+    precondition(period(of: "2027-01-01", .week) == ("2026-12-28", "2027-01-03"))
+    precondition(period(of: "2028-02-14", .month) == ("2028-02-01", "2028-02-29"))
+    precondition(period(of: "2026-12-31", .month) == ("2026-12-01", "2026-12-31"))
+    // 2–3 Nov fall in the week of 2 Nov, 1 Nov (a Sunday) in the week before; October stays its own month.
+    let weekRows = dayRows + [row("2026-10-31", 4_000_000)]
+    let weeks = topPeriods(weekRows, .week)
+    precondition(weeks.map(\.from) == ["2026-11-02", "2026-10-26"] && weeks[0].through == "2026-11-08")
+    precondition(abs(weeks[0].cost - topPeriods(dayRows.filter { $0.date >= "2026-11-02" }, .month)[0].cost) < 1e-9)
+    let months = topPeriods(weekRows, .month)
+    precondition(months.map(\.from) == ["2026-11-01", "2026-10-01"] && months[1].through == "2026-10-31")
+    precondition(months[0].unpriced && !months[1].unpriced && months[0].contains("2026-11-30"))
+    precondition(todayRank(dayRows, today: "2026-11-02") == 2 && todayRank(dayRows, today: "2026-11-04") == nil)
+    precondition(todayRank(dayRows, today: "2026-11-08") == nil)
+    // 2 Nov 2026 is a Monday: the day and its week are different records.
+    precondition(recordKey(.day, "2026-11-02") != recordKey(.week, "2026-11-02"))
+    print("PASS: records of days, weeks and months: dearest first, ties by tokens, days without a price left out")
 
     // Wrapped 2026: Opus 5 at $5 input. Rows from 2025 and 2027 stay out.
     func r(_ date: String, _ provider: String, _ model: String, _ input: Int, hour: Int? = nil) -> UsageRow {

@@ -143,18 +143,45 @@ func totalsBySession(_ sessions: [SessionUsage], from: String?, through: String,
       requests: rows.reduce(0) { $0 + $1.requests }, unpriced: rows.contains { $0.cost == nil })
   }
 }
-// The dearest days, for the Records tab: most expensive first, more tokens first on a tie, then the later day.
-// Days without any priced cost are left out.
-struct DayRecord: Equatable { var day: String; var cost = 0.0; var tokens = 0; var unpriced = false }
-func topDays(_ rows: [UsageRow], limit: Int = 10) -> [DayRecord] {
-  var byDay: [String: DayRecord] = [:]
-  for r in rows {
-    var d = byDay[r.date] ?? DayRecord(day: r.date); d.tokens += r.tokens
-    if let c = r.cost { d.cost += c } else { d.unpriced = true }
-    byDay[r.date] = d
+// The Records tab ranks days, weeks (Monday to Sunday) or months, dearest first: a tie goes to more tokens, then to the
+// later period. Periods without any priced cost are left out. `from` and `through` are yyyy-MM-dd days.
+enum RecordSpan: String { case day, week, month }
+struct PeriodRecord: Equatable {
+  var from: String; var through: String; var cost = 0.0; var tokens = 0; var unpriced = false
+  func contains(_ day: String) -> Bool { day >= from && day <= through }
+}
+// The first and last day of the period a day falls in.
+func period(of day: String, _ span: RecordSpan) -> (from: String, through: String) {
+  guard span != .day, let date = dayFormatter.date(from: day) else { return (day, day) }
+  let cal = bratislava
+  let start: Date, end: Date
+  if span == .week {
+    // Sunday=1 … Saturday=7, so Monday is (weekday + 5) % 7 days back.
+    start = cal.date(byAdding: .day, value: -((cal.component(.weekday, from: date) + 5) % 7), to: date)!
+    end = cal.date(byAdding: .day, value: 6, to: start)!
+  } else {
+    start = cal.date(from: cal.dateComponents([.year, .month], from: date))!
+    end = cal.date(byAdding: DateComponents(month: 1, day: -1), to: start)!
   }
-  let sorted = byDay.values.filter { $0.cost > 0 }.sorted {
-    $0.cost != $1.cost ? $0.cost > $1.cost : $0.tokens != $1.tokens ? $0.tokens > $1.tokens : $0.day > $1.day
+  return (dayFormatter.string(from: start), dayFormatter.string(from: end))
+}
+// Which record is open, as "week|2026-11-16": a day and the week starting on it never share a key.
+func recordKey(_ span: RecordSpan, _ from: String) -> String { span.rawValue + "|" + from }
+// Today's place among the ten dearest days of all time, from 1. nil when it isn't among them.
+func todayRank(_ rows: [UsageRow], today: String) -> Int? {
+  topPeriods(rows).firstIndex { $0.from == today }.map { $0 + 1 }
+}
+func topPeriods(_ rows: [UsageRow], _ span: RecordSpan = .day, limit: Int = 10) -> [PeriodRecord] {
+  var spans: [String: (from: String, through: String)] = [:]
+  var byPeriod: [String: PeriodRecord] = [:]
+  for r in rows {
+    let p = spans[r.date] ?? period(of: r.date, span); spans[r.date] = p
+    var d = byPeriod[p.from] ?? PeriodRecord(from: p.from, through: p.through); d.tokens += r.tokens
+    if let c = r.cost { d.cost += c } else { d.unpriced = true }
+    byPeriod[p.from] = d
+  }
+  let sorted = byPeriod.values.filter { $0.cost > 0 }.sorted {
+    $0.cost != $1.cost ? $0.cost > $1.cost : $0.tokens != $1.tokens ? $0.tokens > $1.tokens : $0.from > $1.from
   }
   return Array(sorted.prefix(limit))
 }

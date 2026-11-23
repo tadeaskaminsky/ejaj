@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.0 (2026-11-23)
+
+- **Records** ranks weeks and months as well as days. **Days**, **Weeks** and **Months** replace the range picker on that tab. Weeks run Monday to Sunday. A week or month opens the sessions that ran in it, each with only its cost in that period, plus the number of active days.
+- The day, week or month you're in is green in Records, with a TODAY, THIS WEEK or THIS MONTH badge. When today is among the ten dearest days, the quick view adds "Dnes si #N v rebríčku všetkých čias".
+- Bigger type across the dashboard: the tabs, the All / Claude / Codex switch and the other pickers. The same goes for the session, model and project tables, the Sessions lists and the total cards. Table columns are wider, and long figures in a card shrink rather than wrap.
+- Checked: tests for week and month boundaries (Monday start, a week across the new year, a leap February), ranking, today's place and the key of the open record. Renders of the Records lists, a month, the Sessions tab, the header and the quick view at the narrowest window. A review checked every day from 2023 to 2031 against ISO weeks in Bratislava time with no mismatch. It found only Low items and one Medium (two behaviours without a test), and both are fixed. The sessions of a record now also start at Count from. Not checked: clicks in the running app.
+
 ## 1.17.0 (2026-11-23)
 
 - **Records**, a new tab with the ten most expensive days. Click a day to see what each session spent on it. Then click a session to see its cost, tokens and models for that day alone. If part of the day's cost belongs to no session, a line says how much.
