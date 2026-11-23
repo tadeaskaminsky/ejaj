@@ -1217,9 +1217,9 @@ struct QuickView: View {
           }
         }
       }
-      let v = dayVerdict(store.countedRows);
+      let v = dayVerdict(store.countedRows, money: store.money);
       HStack(spacing: 9) {
-        Image(systemName: v.icon); Text(v.text).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        Image(systemName: v.icon); Text(v.text).lineLimit(3).fixedSize(horizontal: false, vertical: true)
       }.font(.system(size: 12, weight: .semibold)).foregroundStyle(v.color).padding(.horizontal, 12).padding(
         .vertical, 9
       ).frame(maxWidth: .infinity, alignment: .leading).background(
@@ -1237,7 +1237,7 @@ struct QuickView: View {
 }
 // Spending more is the goal here. Today's API cost against the same weekday over the last 12 weeks,
 // falling back to the last 30 days when that weekday has no history yet.
-func dayVerdict(_ rows: [UsageRow]) -> (text: String, icon: String, color: Color) {
+func dayVerdict(_ rows: [UsageRow], money: (Double) -> String) -> (text: String, icon: String, color: Color) {
   var cal = Calendar(identifier: .gregorian); cal.timeZone = dayFormatter.timeZone
   let today = dayFormatter.string(from: Date()), weekday = cal.component(.weekday, from: Date())
   func since(_ days: Int) -> String { dayFormatter.string(from: cal.date(byAdding: .day, value: -days, to: Date())!) }
@@ -1248,29 +1248,32 @@ func dayVerdict(_ rows: [UsageRow]) -> (text: String, icon: String, color: Color
     $0.key >= since(84) && dayFormatter.date(from: $0.key).map { cal.component(.weekday, from: $0) } == weekday
   }.map(\.value)
   let recent = past.filter { $0.key >= since(30) }.map(\.value)
-  // Sunday=1 … Saturday=7: (nominative, dative)
+  // Sunday=1 … Saturday=7, in the dative: "oproti priemernému pondelku".
   let names = [
-    ("priemerná nedeľa", "priemernej nedeli"), ("priemerný pondelok", "priemernému pondelku"),
-    ("priemerný utorok", "priemernému utorku"), ("priemerná streda", "priemernej strede"),
-    ("priemerný štvrtok", "priemernému štvrtku"), ("priemerný piatok", "priemernému piatku"),
-    ("priemerná sobota", "priemernej sobote"),
+    "priemernej nedeli", "priemernému pondelku", "priemernému utorku", "priemernej strede",
+    "priemernému štvrtku", "priemernému piatku", "priemernej sobote",
   ]
-  let (like, against) =
-    sameDay.isEmpty ? ("priemer", "priemeru") : (names[weekday - 1].0, "oproti " + names[weekday - 1].1)
+  let vs = sameDay.isEmpty ? "oproti priemeru" : "oproti " + names[weekday - 1]
   let green = Color(red: 0.30, green: 0.74, blue: 0.45), red = Color(red: 0.93, green: 0.33, blue: 0.33)
-  if now <= 0 { return ("Ani cent? Hanba, choď niečo prejebať", "zzz", red) }
-  if let record = past.values.max(), now > record { return ("NOVÝ REKORD! Najlepší deň vôbec", "trophy.fill", green) }
+  if now <= 0 { return ("Kámo no čo? Ideme už konečne niečo prejebať?", "zzz", red) }
   let base = sameDay.isEmpty ? recent : sameDay
-  guard !base.isEmpty else { return ("Zatiaľ nemám s čím porovnať", "questionmark.circle", muted) }
-  let avg = base.reduce(0, +) / Double(base.count), ratio = now / avg, pct = Int((abs(ratio - 1) * 100).rounded())
-  let vs = sameDay.isEmpty ? "oproti priemeru" : against
-  if ratio >= 1.5 { return (String(format: "Popiči deň: %.1f× viac ", ratio) + vs, "flame.fill", green) }
-  if ratio > 1.1 { return ("Masaker deň: +\(pct) % " + vs, "arrow.up.right", green) }
-  if ratio >= 0.9 {
-    return ((sameDay.isEmpty ? "Priemerný deň" : "Ako " + like) + ". Dá sa aj viac", "equal.circle.fill", blue)
+  let avg = base.isEmpty ? nil : base.reduce(0, +) / Double(base.count)
+  // "+4,20 € (+35 %) oproti priemernému pondelku": how far today is from that average, in money and percent.
+  func diff(_ avg: Double) -> String {
+    let d = now - avg, sign = d < 0 ? "−" : "+"
+    return " " + sign + money(abs(d)) + " (" + sign + "\(Int((abs(d) / avg * 100).rounded())) %) " + vs
   }
-  if ratio >= 0.5 { return ("Napiču deň: −\(pct) % " + vs, "arrow.down.right", orange) }
-  return ("Fess napiču deň: −\(pct) % " + vs + ", pridaj", "hand.thumbsdown.fill", red)
+  if let record = past.values.max(), now > record {
+    let text = "WOHOO! Fess popiči deň, prejebal si viac ako nikdy predtým!!!" + (avg.map(diff) ?? "")
+    return (text, "trophy.fill", green)
+  }
+  guard let avg else { return ("Zatiaľ nemám s čím porovnať", "questionmark.circle", muted) }
+  let ratio = now / avg
+  if ratio >= 1.5 { return ("Už to vyzerá dobre." + diff(avg), "flame.fill", green) }
+  if ratio > 1.1 { return ("Už prejebávaš celkom dosť, vyzerá to fajn." + diff(avg), "arrow.up.right", green) }
+  if ratio >= 0.9 { return ("Celkom popiči, ale limit povolí viac." + diff(avg), "equal.circle.fill", blue) }
+  if ratio >= 0.5 { return ("Zatiaľ si prejebal dosť málo, zamakaj." + diff(avg), "arrow.down.right", orange) }
+  return ("Neprejebal si skoro nič, musíš dať lock in." + diff(avg), "hand.thumbsdown.fill", red)
 }
 // Tokens of models without a known price are missing from every cost figure; say so next to the total.
 func unpricedNote(_ rows: [UsageRow]) -> String? {

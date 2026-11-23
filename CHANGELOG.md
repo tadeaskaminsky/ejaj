@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.16.2 (2026-11-23)
+
+- New lines in the quick view's verdict under today's amount, for every kind of day: nothing spent, well under, under, about and over the average, and a record. Each one now also says how far today is from the average, in money and in percent ("+4,20 € (+35 %) oproti priemernému pondelku"). The thresholds and the average are the same as before, and the verdict can now take three lines instead of two.
+- Checked: the build and all tests pass. Not checked: the verdict has no test of its own, and the new lines weren't looked at in the running app.
+
 ## 1.16.1 (2026-11-16)
 
 - **Add folder…** under Session folders now opens a window where you can type the folder's path (`~` works) instead of only picking it in Finder. **Choose…** still picks it, and the window lists folders with Claude Code sessions that EJAJ found on the Mac and doesn't read yet, each with its number of logs and an **Add** button. The search looks in the hidden folders of the home folder and in each app's folder in `~/.config` and `~/Library/Application Support`. It never lists what is inside another app's folder, because for some apps (Chrome, Brave) macOS would ask the user to allow access to that app's data. A typed path that doesn't exist, is a file, is relative, is too big or is already added is refused with the reason.
