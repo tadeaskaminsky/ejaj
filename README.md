@@ -35,7 +35,7 @@ The app is signed ad hoc, not notarized. That's fine on the Mac that built it. A
 
 EJAJ has no Dock icon. It lives in the menu bar as a small waveform.
 
-- **Click** it for the quick view: today's cost, tokens per tool and a verdict comparing today with the same weekday over the past 12 weeks, with the difference in money and percent. The quick view is in Slovak, on purpose. In euros, a small line under the amount gives the same cost in dollars and the ECB rate used, so you can hold it against a USD price list or another tool.
+- **Click** it for the quick view: today's cost, tokens per tool and a verdict comparing today with the same weekday over the past 12 weeks, with the difference in money and percent. The quick view is in Slovak, on purpose. The **?** next to its title swaps the figures for a short card on what they mean. The card shows by itself the first time you open the quick view. In euros, a small line under the amount gives the same cost in dollars and the ECB rate used, so you can hold it against a USD price list or another tool.
 - **Right-click** it for a line with today's cost (with dollars in brackets when you count in euros) and tokens, then Open EJAJ, Refresh data, Archive to GitHub, Launch at login and Quit.
 - **Dashboard** in the quick view (or `⌘O`) opens the main window. It fills the screen between the menu bar and the Dock, on the display whose menu bar you clicked, and the content stretches to the full width. A double-click on the title bar shrinks it to the size it had last time (1000 x 760 at first), and another one fills the screen again. Each time you open it, it fills the screen.
 
@@ -43,7 +43,7 @@ The data refreshes every 30 seconds. The first scan of a long history can take a
 
 ### 3. The dashboard
 
-The switch next to the EJAJ mark picks the tab: **Overview**, **Calendar**, **Projects**, **Sessions**, **Records** or **Patterns**. The window remembers the last one. On the right are Refresh (hover it to see when the logs were last read), the gear menu and Archive.
+The switch next to the EJAJ mark picks the tab: **Overview**, **Calendar**, **Projects**, **Sessions**, **Records** or **Patterns**. The window remembers the last one. Each tab has a short help card that shows by itself the first time you open that tab, and after that from the **?** button. On the right are ?, Refresh (hover it to see when the logs were last read), the gear menu and Archive.
 
 The two pickers under it decide what every tab shows. **Platform** is All, Claude or Codex. **Range** is Today, 7, 30 or 90 days, or All time. The Calendar tab moves by month, so it has no Range picker.
 

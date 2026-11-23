@@ -17,6 +17,14 @@ import SwiftUI
       precondition(window.contentMinSize.width == 880, "hosting view sizes not applied: \(window.contentMinSize)")
       precondition(window.contentMaxSize.width == .infinity, "dashboard caps the window: \(window.contentMaxSize)")
     }
-    print("PASS: dashboard window has no maximum width")
+    // The quick view's panel is sized to its figures, so its help card, which takes their place, must not be taller.
+    let quickStore = UsageStore()
+    let figures = NSHostingView(rootView: QuickView(store: quickStore, open: {}, quit: {})).fittingSize.height
+    quickStore.quickHelp = true
+    let help = NSHostingView(rootView: QuickView(store: quickStore, open: {}, quit: {})).fittingSize.height
+    precondition(figures > 0 && help <= figures + 1, "quick view help \(help) taller than its figures \(figures)")
+    // Every tab has a help card, and so does the quick view.
+    precondition(Dashboard.tabs.allSatisfy { helpTopics[$0.value] != nil } && helpTopics["quick"] != nil)
+    print("PASS: dashboard window has no maximum width; every tab has help")
   }
 }

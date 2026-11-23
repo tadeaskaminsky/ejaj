@@ -255,6 +255,8 @@ private let slovakTime: DateFormatter = {
   // Claude plan limits (5-hour and weekly), read every 5 minutes. A failed read keeps the last numbers.
   @Published var plan: PlanLimits?
   @Published var planState = PlanState.loading
+  // The quick view's help card, shown in place of its figures.
+  @Published var quickHelp = false
   @Published var planFetched: Date?
   private var lastPlanAttempt = Date.distantPast
   private var planBusy = false
@@ -613,6 +615,36 @@ struct Wordmark: View {
   }
 }
 struct Dot: View { var color: Color; var body: some View { Circle().fill(color).frame(width: 6, height: 6) } }
+// A help card: what a place shows, as a few short lines, with a button to close it.
+struct HelpCard: View {
+  var topic: HelpTopic; var size: CGFloat = 13; var close: () -> Void
+  var body: some View {
+    VStack(alignment: .leading, spacing: size * 0.6) {
+      HStack(spacing: 8) {
+        Image(systemName: "questionmark.circle.fill").foregroundStyle(blue)
+        Text(topic.title).font(.system(size: size + 2, weight: .semibold))
+        Spacer()
+        Button(action: close) { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(muted)
+          .help("Close").keyboardShortcut(.cancelAction)
+      }
+      ForEach(topic.lines, id: \.self) { line in
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Circle().fill(blue).frame(width: 5, height: 5).alignmentGuide(.firstTextBaseline) { $0[.bottom] + size * 0.25 }
+          Text(line).fixedSize(horizontal: false, vertical: true)
+        }
+      }
+    }.font(.system(size: size)).padding(size * 1.1).frame(maxWidth: .infinity, alignment: .leading)
+      .background(blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+      .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(blue.opacity(0.25)))
+  }
+}
+// Opens a place's help the first time it is seen, and remembers that it was.
+func firstVisitHelp(_ key: String) -> Bool {
+  let seen = UserDefaults.standard.stringArray(forKey: "helpSeen") ?? []
+  let r = helpOnFirstVisit(key, seen: seen)
+  if r.show { UserDefaults.standard.set(r.seen, forKey: "helpSeen") }
+  return r.show
+}
 struct Panel<Content: View>: View {
   let content: Content; init(@ViewBuilder content: () -> Content) { self.content = content() };
   var body: some View {
@@ -1201,7 +1233,20 @@ struct QuickView: View {
   var body: some View {
     let today = store.filtered(days: 1)
     VStack(alignment: .leading, spacing: 18) {
-      Text("DNES SI PREJEBAL").font(.system(size: 24, weight: .heavy)).tracking(-0.4)
+      HStack(alignment: .center) {
+        Text("DNES SI PREJEBAL").font(.system(size: 24, weight: .heavy)).tracking(-0.4)
+        Spacer()
+        Button {
+          store.quickHelp.toggle()
+        } label: {
+          Image(systemName: store.quickHelp ? "questionmark.circle.fill" : "questionmark.circle").font(.system(size: 17))
+        }.buttonStyle(.plain).foregroundStyle(store.quickHelp ? blue : muted).help("Čo tu vidíš")
+      }
+      // The panel's height is measured from the figures when it opens, so the help takes their place rather than
+      // pushing them below its edge.
+      if store.quickHelp, let topic = helpTopics["quick"] {
+        HelpCard(topic: topic, size: 12) { store.quickHelp = false }
+      } else {
       VStack(alignment: .leading, spacing: 2) {
         Text(store.money(store.cost(today))).font(
           .system(size: 46, weight: .bold, design: .rounded)
@@ -1238,6 +1283,7 @@ struct QuickView: View {
         }.font(.system(size: 13, weight: .medium)).foregroundStyle(ink).padding(.horizontal, 15).frame(height: 40)
           .background(blue.opacity(0.22), in: RoundedRectangle(cornerRadius: 10))
       }.buttonStyle(.plain).keyboardShortcut("o")
+      }
     }.padding(22).padding(.top, store.festive ? 18 : 0)
       .overlay(alignment: .top) { if store.festive { Garland() } }
       .frame(width: 340).background(canvas).foregroundStyle(ink).preferredColorScheme(store.colorScheme)
@@ -1293,6 +1339,7 @@ struct Dashboard: View {
   @ViewState var costMode = false
   @ViewState var showWrapped = false
   @ViewState var recordSpan = RecordSpan.day
+  @ViewState var helpTab: String?
   @ViewState var showAddFolder = false
   // The last tab is remembered; 1.11 called the Projects tab Analytics.
   @ViewState var tab: String = {
@@ -1325,6 +1372,11 @@ struct Dashboard: View {
               UpdateChip(store: store, release: release)
             }
             Button {
+              helpTab = helpTab == tab ? nil : tab
+            } label: {
+              Image(systemName: helpTab == tab ? "questionmark.circle.fill" : "questionmark.circle")
+            }.buttonStyle(ChipStyle()).help("What this tab shows")
+            Button {
               store.refresh()
             } label: {
               Image(systemName: "arrow.clockwise").rotationEffect(.degrees(store.busy ? 360 : 0))
@@ -1338,7 +1390,9 @@ struct Dashboard: View {
               Label(store.archiving ? "Archiving…" : "Archive", systemImage: "archivebox")
             }.buttonStyle(ChipStyle()).disabled(store.archiving).help("Archive the token counts to GitHub")
           }
-        }.onChange(of: tab) { UserDefaults.standard.set($0, forKey: "tab") }
+        }.onChange(of: tab) {
+          UserDefaults.standard.set($0, forKey: "tab"); if firstVisitHelp($0) { helpTab = $0 }
+        }.onAppear { if firstVisitHelp(tab) { helpTab = tab } }
         HStack(spacing: 12) {
           PillPicker(
             selection: $store.provider,
@@ -1374,6 +1428,9 @@ struct Dashboard: View {
         if (store.days == 0 && tab != "calendar") || tab == "records", let from = store.countFrom {
           Text("All time starts on \(Dashboard.readable(from)), as Count from in the gear menu says.")
             .font(.system(size: 11)).foregroundStyle(muted)
+        }
+        if let helpTab, helpTab == tab, let topic = helpTopics[helpTab] {
+          HelpCard(topic: topic) { self.helpTab = nil }
         }
         switch tab {
         case "calendar": CalendarPanel(store: store, costMode: costMode)

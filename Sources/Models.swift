@@ -1253,6 +1253,68 @@ func updateNotice(version: String, log: NoticeLog) -> Notice? {
     : Notice(kind: .update(version), title: "EJAJ \(version) je vonku", body: "Otvor dashboard a klikni na Update.")
 }
 
+// Help: a short card per dashboard tab and one for the quick view. Each shows by itself the first time its place is
+// opened, once, and after that only from the ? button. The keys already shown are kept in UserDefaults.
+struct HelpTopic: Equatable { var title: String; var lines: [String] }
+let helpTopics: [String: HelpTopic] = [
+  "overview": HelpTopic(
+    title: "Overview",
+    lines: [
+      "What you spent in the chosen range on the chosen platform. Platform (All, Claude, Codex) above applies to every tab, and Range to most of them.",
+      "The cards total the tokens, the API cost and what the prompt cache saved. Most tokens are cheap cache reads, so the cost says more about the bill than the token count.",
+      "The chart has one bar per day, or per hour with Today. Tokens / Cost above it picks what it measures. Hover it for a day's figures.",
+      "Models lists every model with its tokens, cache hit rate and share of the cost. Click a column to sort.",
+    ]),
+  "calendar": HelpTopic(
+    title: "Calendar",
+    lines: [
+      "One month with each day's API cost. Darker days cost more and the month's dearest day has a flame. ‹ and › change the month.",
+      "Claude week above the grid is your plan's weekly limit, the same numbers as /usage in Claude Code, and where the week is heading at this pace. A click reads it again.",
+      "Click a day for its hours and two banners: the day against the average same weekday, and its week against earlier weeks.",
+    ]),
+  "projects": HelpTopic(
+    title: "Projects",
+    lines: [
+      "What each project cost in the chosen range, dearest first. A project is the git repository the session worked in.",
+      "Click a project for its totals and sessions, then a session for its own breakdown.",
+      "Rename gives a project your own name. Projects with the same name count as one.",
+    ]),
+  "sessions": HelpTopic(
+    title: "Sessions",
+    lines: [
+      "Running now lists the sessions that sent a request in the last 10 minutes, with what they cost today.",
+      "Below are the range's record sessions and then every session in one table. Search by title or project.",
+      "Click any session for its cost, tokens and models.",
+    ]),
+  "records": HelpTopic(
+    title: "Records",
+    lines: [
+      "The ten most expensive days, weeks or months of all time. Days, Weeks and Months on the right switch between them.",
+      "The day, week or month you're in is green, with a TODAY, THIS WEEK or THIS MONTH badge.",
+      "Click a record for the sessions that ran in it, each with only what it cost then, and a session for its breakdown.",
+    ]),
+  "patterns": HelpTopic(
+    title: "Patterns",
+    lines: [
+      "When in the week the money goes: one square per hour of each weekday, darker where more was spent in the range.",
+      "Weekday totals are on the right and hour totals below. Hover a square for its cost and the average for such a day.",
+      "With Today chosen it shows today's hours instead, the current one ringed.",
+    ]),
+  "quick": HelpTopic(
+    title: "Čo tu vidíš",
+    lines: [
+      "Koľko si dnes prejebal v cenách API, za Claude aj Codex spolu, a tokeny každého z nich.",
+      "Hláška porovná dnešok s priemerným rovnakým dňom v týždni za posledných 12 týždňov a ukáže rozdiel v peniazoch aj v percentách.",
+      "Keď je dnešok medzi 10 najdrahšími dňami, trofej ukáže jeho poradie. Celý rebríček je v Dashboarde v záložke Records.",
+      "Dashboard (⌘O) otvorí okno so všetkým ostatným. Tam má každá záložka vlastný otáznik.",
+    ]),
+]
+// Whether a place opens with its help, and the list of places to remember after it did.
+func helpOnFirstVisit(_ key: String, seen: [String]) -> (show: Bool, seen: [String]) {
+  guard helpTopics[key] != nil, !seen.contains(key) else { return (false, seen) }
+  return (true, seen + [key])
+}
+
 // The year Wrapped is about: the current one, except in January (still the Christmas season), when it is the year that
 // just ended.
 func wrappedYear(_ now: Date) -> Int {

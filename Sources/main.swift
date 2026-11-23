@@ -101,8 +101,14 @@ final class QuickPanel: NSPanel {
       // Keep the whole panel below both the visible menu bar and the display cutout.
       let safeTop = min(available.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
       let panelTop = min(anchor.minY, safeTop) - 6
-      // 362 fits the USD line under the euro figure and a two-line verdict; the Christmas lights need 18 more.
-      let height = min(CGFloat(store.festive ? 380 : 362), max(1, panelTop - available.minY - 4))
+      // The help shows by itself the first time the panel really opens, not when it is built hidden at launch.
+      store.quickHelp = firstVisitHelp("quick")
+      // As tall as the figures need (the USD line, a three-line verdict, the rank, the Christmas lights), measured
+      // without the help, which takes their place and is shorter.
+      let help = store.quickHelp; store.quickHelp = false
+      let content = NSHostingView(rootView: QuickView(store: store, open: {}, quit: {})).fittingSize.height
+      store.quickHelp = help
+      let height = min(max(320, ceil(content)), max(1, panelTop - available.minY - 4))
       let width: CGFloat = 340
       let x = min(max(anchor.midX - width / 2, available.minX + 6), available.maxX - width - 6)
       // Anchor below the safe area; never overlap a MacBook notch.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.0 (2026-11-23)
+
+- Help in the app. Every dashboard tab has a short card on what it shows, and the quick view has one in Slovak. Each card opens by itself the first time you open its tab or the quick view, once, and after that from the **?** button in the toolbar or next to "DNES SI PREJEBAL". The x or Esc closes it. In the quick view the card takes the place of the figures.
+- Fixed: since 1.18.0 the quick view cut off its Dashboard button. The rank line and a three-line verdict made it taller than the fixed 362 pt panel. The panel now takes the height its content needs.
+- Checked: tests for showing help once per place, a card for every tab and for the quick view, and the quick view's help being no taller than its figures. Measured on this Mac's data, the quick view is 397 pt tall, 358 pt with help and 415 pt with the Christmas lights. Renders of the cards. A review checked that the help text matches each tab. It caught the cut-off quick view, an Overview line claiming Range applies to every tab, and the quick view's help being marked as seen at launch before it was ever shown. All three are fixed. Not checked: clicks in the running app, and whether Esc in the Rename popover closes the help card instead of the popover.
+
 ## 1.18.0 (2026-11-23)
 
 - **Records** ranks weeks and months as well as days. **Days**, **Weeks** and **Months** replace the range picker on that tab. Weeks run Monday to Sunday. A week or month opens the sessions that ran in it, each with only its cost in that period, plus the number of active days.

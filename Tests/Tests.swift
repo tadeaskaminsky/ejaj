@@ -845,6 +845,11 @@ import Foundation
     precondition(todayRank(dayRows, today: "2026-11-08") == nil)
     // 2 Nov 2026 is a Monday: the day and its week are different records.
     precondition(recordKey(.day, "2026-11-02") != recordKey(.week, "2026-11-02"))
+    // Help opens by itself once per place, and only for places that have a card.
+    let firstHelp = helpOnFirstVisit("records", seen: ["overview"])
+    precondition(firstHelp.show && firstHelp.seen == ["overview", "records"])
+    precondition(!helpOnFirstVisit("records", seen: firstHelp.seen).show && !helpOnFirstVisit("nowhere", seen: []).show)
+    precondition(helpTopics.values.allSatisfy { !$0.title.isEmpty && !$0.lines.isEmpty && !$0.lines.contains { $0.contains("—") } })
     print("PASS: records of days, weeks and months: dearest first, ties by tokens, days without a price left out")
 
     // Wrapped 2026: Opus 5 at $5 input. Rows from 2025 and 2027 stay out.
