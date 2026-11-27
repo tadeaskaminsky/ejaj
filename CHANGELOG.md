@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.21.0 (2026-11-27)
+
+- How many tokens a whole Claude limit holds. Under each limit in the quick view, "Celý limit ≈ 108.0 M tokenov (937.6 k output)" estimates how many Claude Code tokens a full session and a full week take at your recent mix of models. It compares each whole hour's tokens with how far the limit rose in that hour, over the last 7 days, and appears once there are at least 20 points of the session or 5 of the week to go on. Hours that cross a reset, lack a reading near their start or end, or end at 100 % are left out. Use on claude.ai raises the limit without Claude Code tokens, so the estimate errs low. Hovering the calendar's Claude week banner gives the weekly figure in English.
+- EJAJ now keeps 7 days of limit readings instead of 24 hours. The forecasts still go by the last 45 minutes and 24 hours.
+- Checked: tests for the estimate (rises and points per hour, the Claude-only filter, hours not yet read, the reset, a new window starting higher, hours at 100 %, gaps in readings, no tokens, the minimum points and the Slovak line). Each guard was removed in turn to confirm a test fails without it. Also tested: 7-day retention, and that a 30-hour-old reading doesn't set the 24-hour pace. A render of the quick view with test readings. A review found that hours at the capped 100 % pushed the estimate up and that the reset check had no test of its own; both are fixed. Not checked: the estimate with real readings, since EJAJ had only a few hours of them and no whole hour yet. window-tests' quick-view help height check failed in some runs, on 1.20.0 as well, and passed in the packaging run.
+
 ## 1.20.0 (2026-11-23)
 
 - When the Claude limits run out. The quick view has a **LIMITY CLAUDE** block with the 5-hour session limit and the weekly limit: what each is at, and either "Dôjde ~15:58, o 1 h 3 min" or "Vydrží do resetu 16:24, skončíš na ~78 %". EJAJ keeps 24 hours of the limit readings it takes every 5 minutes. The session goes by the pace of the last 45 minutes, the week by the faster of the week so far and the last 24 hours.

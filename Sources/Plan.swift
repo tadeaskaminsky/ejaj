@@ -294,17 +294,18 @@ enum ClaudePlan {
   }
 }
 
-// Readings of the plan limits over the last 24 hours, kept across launches, for telling how fast the limits are going
-// right now. Work comes in bursts, so the pace since a window began says little about the next hour.
+// Readings of the plan limits over the last 7 days, kept across launches, for telling how fast the limits are going
+// right now and how many tokens a whole limit holds. Work comes in bursts, so the pace since a window began says
+// little about the next hour.
 struct PlanSample: Codable, Equatable {
   var at: Date
   var five: Double? = nil; var fiveReset: Date? = nil
   var week: Double? = nil; var weekReset: Date? = nil
 }
-// The readings with a new one added: older than 24 hours dropped, and one taken under 4 minutes after the last
+// The readings with a new one added: older than 7 days dropped, and one taken under 4 minutes after the last
 // replacing it, so forced refreshes don't crowd the list.
 func addPlanSample(_ samples: [PlanSample], _ limits: PlanLimits, at now: Date) -> [PlanSample] {
-  var kept = samples.filter { now.timeIntervalSince($0.at) <= 86_400 && $0.at <= now }
+  var kept = samples.filter { now.timeIntervalSince($0.at) <= 604_800 && $0.at <= now }
   if let last = kept.last, now.timeIntervalSince(last.at) < 240 { kept.removeLast() }
   return kept + [
     PlanSample(
@@ -313,6 +314,55 @@ func addPlanSample(_ samples: [PlanSample], _ limits: PlanLimits, at now: Date) 
   ]
 }
 enum LimitKind { case fiveHour, weekly }
+// How many Claude Code tokens a whole limit holds, from the hours whose start and end both have a reading of the
+// same window: the tokens of those hours over the points the limit rose in them. Hours are whole Bratislava hours,
+// as the hourly rows count them, and only those the dataset has fully read (ending by `through`) count. Usage
+// outside Claude Code (claude.ai, the desktop app) raises the limit without adding tokens, so it can only make the
+// estimate lower. Hours that end at 100 % are left out: the API caps the figure there, so with extra usage the tokens
+// would go on while the points stop. nil below `minPoints`, where the rounding of whole percents would swamp it.
+struct LimitCapacity: Equatable {
+  var tokens: Double; var output: Double  // per 100 %
+  var points: Double  // what the estimate rests on
+}
+func limitCapacity(
+  _ samples: [PlanSample], _ kind: LimitKind, hourly: [UsageRow], through: Date, minPoints: Double
+) -> LimitCapacity? {
+  let readings: [(at: Date, value: Double, reset: Date)] = samples.compactMap { s in
+    let (value, reset) = kind == .fiveHour ? (s.five, s.fiveReset) : (s.week, s.weekReset)
+    guard let value, let reset else { return nil }
+    return (s.at, value, reset)
+  }
+  guard let first = readings.map(\.at).min(), let last = readings.map(\.at).max() else { return nil }
+  // The reading closest to a moment, within 5.5 minutes of it (they come every 5).
+  func reading(_ t: Date) -> (at: Date, value: Double, reset: Date)? {
+    readings.filter { abs($0.at.timeIntervalSince(t)) <= 330 }
+      .min { abs($0.at.timeIntervalSince(t)) < abs($1.at.timeIntervalSince(t)) }
+  }
+  var byHour: [TimeInterval: (tokens: Double, output: Double)] = [:]
+  let cal = bratislava
+  var days: [String: Date] = [:]
+  for r in hourly where r.provider == "claude" {
+    guard let hour = r.hour, let day = days[r.date] ?? dayFormatter.date(from: r.date),
+      let start = cal.date(bySettingHour: hour, minute: 0, second: 0, of: day)
+    else { continue }
+    days[r.date] = day
+    let old = byHour[start.timeIntervalSince1970] ?? (0, 0)
+    byHour[start.timeIntervalSince1970] = (old.tokens + Double(r.tokens), old.output + Double(r.output))
+  }
+  var tokens = 0.0, output = 0.0, points = 0.0
+  var hour = (first.timeIntervalSince1970 / 3600).rounded(.down) * 3600
+  while hour < last.timeIntervalSince1970 {
+    defer { hour += 3600 }
+    let start = Date(timeIntervalSince1970: hour), end = start.addingTimeInterval(3600)
+    guard end <= through, let a = reading(start), let b = reading(end),
+      abs(a.reset.timeIntervalSince(b.reset)) < 600, b.value >= a.value, b.value < 100
+    else { continue }
+    points += b.value - a.value
+    tokens += byHour[hour]?.tokens ?? 0; output += byHour[hour]?.output ?? 0
+  }
+  guard points >= minPoints, tokens > 0 else { return nil }
+  return LimitCapacity(tokens: tokens * 100 / points, output: output * 100 / points, points: points)
+}
 // Percentage points per hour over the readings of the last `span`, counting only readings of the same window (the
 // same reset, give or take 10 minutes). nil when they cover less than `minSpan`.
 func recentPace(
@@ -378,6 +428,15 @@ func weeklyForecast(_ w: PlanWindow, samples: [PlanSample], now: Date) -> LimitF
     return w.used >= 100 ? limitForecast(used: w.used, resetsAt: reset, now: now, pace: 0, basis: .window) : nil
   }
   return limitForecast(used: w.used, resetsAt: reset, now: now, pace: whole, basis: .window)
+}
+// "Celý limit ≈ 108.0 M tokenov (937.6 k output)": what a whole limit holds, for the quick view.
+func capacityText(_ c: LimitCapacity) -> String {
+  "Celý limit ≈ " + compact(Int(c.tokens.rounded())) + " tokenov (" + compact(Int(c.output.rounded())) + " output)"
+}
+// The same in English for the calendar banner's tooltip.
+func weekCapacityHelp(_ c: LimitCapacity) -> String {
+  "A whole week holds about " + compact(Int(c.tokens.rounded())) + " Claude Code tokens ("
+    + compact(Int(c.output.rounded())) + " output) at the last 7 days' mix."
 }
 // "1 h 10 min", "25 min", "2 d 4 h": how long until something, for the quick view.
 func untilText(_ seconds: TimeInterval) -> String {

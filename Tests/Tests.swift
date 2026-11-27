@@ -724,10 +724,11 @@ import Foundation
       var samples: [PlanSample] = []
       for i in 0...6 { samples = addPlanSample(samples, limits(20 + Double(i) * 5, 40), at: t0.addingTimeInterval(Double(i) * 300)) }
       precondition(samples.count == 7)
-      // A forced read 2 minutes later replaces the last one; readings over 24 hours old are dropped.
+      // A forced read 2 minutes later replaces the last one; readings over 7 days old are dropped.
       let crowded = addPlanSample(samples, limits(51, 40), at: t0.addingTimeInterval(1_920))
       precondition(crowded.count == 7 && crowded.last?.five == 51)
-      precondition(addPlanSample(samples, limits(0, 0), at: t0.addingTimeInterval(90_000)).count == 1)
+      precondition(addPlanSample(samples, limits(0, 0), at: t0.addingTimeInterval(90_000)).count == 8)
+      precondition(addPlanSample(samples, limits(0, 0), at: t0.addingTimeInterval(700_000)).count == 1)
       let now = t0.addingTimeInterval(1_800)
       let five = fiveHourForecast(PlanWindow(label: "5-hour", used: 50, resetsAt: reset5), samples: samples, now: now)!
       precondition(five.basis == .recent && five.runsOut == now.addingTimeInterval(3_000))
@@ -754,6 +755,9 @@ import Foundation
       // Under 3 hours of readings don't count for the week.
       let short = [PlanSample(at: t0.addingTimeInterval(-3_600), week: 30, weekReset: resetW)]
       precondition(weeklyForecast(week, samples: short, now: t0)?.basis == .window)
+      // Readings are kept 7 days now, but one from 30 hours ago still doesn't set the 24-hour pace.
+      let dayOld = [PlanSample(at: t0.addingTimeInterval(-108_000), week: 20, weekReset: resetW)]
+      precondition(weeklyForecast(week, samples: dayOld, now: t0)?.basis == .window)
       precondition(untilText(1_500) == "25 min" && untilText(4_200) == "1 h 10 min" && untilText(7_200) == "2 h")
       precondition(untilText(187_200) == "2 d 4 h" && untilText(10) == "1 min")
       let hhmm = { (d: Date) in String(Int(d.timeIntervalSince(t0) / 60)) }
@@ -783,6 +787,64 @@ import Foundation
       // Readings under 10 minutes apart don't either.
       let close = [PlanSample(at: now.addingTimeInterval(-300), five: 45, fiveReset: reset5)]
       precondition(fiveHourForecast(w50, samples: close, now: now)?.basis == .window)
+    }
+    // Capacity. Readings every 5 minutes from 10:00 to 13:00 (Bratislava, so a whole UTC hour too): the week goes
+    // 40 -> 42 -> 45 -> 46; the session goes 30 -> 50, resets at 11:30, then 10 -> 30, so its 11:00 hour doesn't count.
+    do {
+      let ten = bratislava.date(bySettingHour: 10, minute: 0, second: 0, of: dayFormatter.date(from: "2026-11-20")!)!
+      let weekReset = ten.addingTimeInterval(3 * 86_400)
+      var samples: [PlanSample] = []
+      for i in 0...36 {
+        let at = ten.addingTimeInterval(Double(i) * 300 + 20)
+        let week: Double = i < 12 ? 40 : i < 24 ? 42 : i < 36 ? 45 : 46
+        let five: Double = i < 12 ? 30 : i < 18 ? 50 : i < 24 ? 0 : i < 36 ? 10 : 30
+        let fiveReset = i < 18 ? ten.addingTimeInterval(5_400) : ten.addingTimeInterval(5_400 + 18_000)
+        samples.append(PlanSample(at: at, five: five, fiveReset: fiveReset, week: week, weekReset: weekReset))
+      }
+      func row(_ hour: Int, _ provider: String, output: Int, cached: Int) -> UsageRow {
+        UsageRow(
+          date: "2026-11-20", provider: provider, model: "m", source: "s", cached: cached, output: output, hour: hour)
+      }
+      let hourly = [
+        row(10, "claude", output: 100, cached: 900), row(11, "claude", output: 200, cached: 1_800),
+        row(12, "claude", output: 50, cached: 450), row(12, "codex", output: 9_999, cached: 0),
+      ]
+      let end = ten.addingTimeInterval(3 * 3600)
+      // The week: 3 500 tokens (350 output) over 6 points.
+      let week = limitCapacity(samples, .weekly, hourly: hourly, through: end, minPoints: 5)!
+      precondition(week.points == 6 && abs(week.tokens - 3_500 * 100 / 6) < 1e-6)
+      precondition(abs(week.output - 350 * 100 / 6) < 1e-6)
+      // Below the minimum, or with the last hour not yet read, there is less to go on.
+      precondition(limitCapacity(samples, .weekly, hourly: hourly, through: end, minPoints: 7) == nil)
+      let unread = end.addingTimeInterval(-60)
+      precondition(limitCapacity(samples, .weekly, hourly: hourly, through: unread, minPoints: 5)?.points == 5)
+      // The session: 1 000 tokens for 20 points at 10:00 and 500 for 20 at 12:00; 11:00 spans the reset.
+      let five = limitCapacity(samples, .fiveHour, hourly: hourly, through: end, minPoints: 20)!
+      precondition(five.points == 40 && five.tokens == 3_750 && five.output == 375)
+      precondition(limitCapacity([], .weekly, hourly: hourly, through: end, minPoints: 1) == nil)
+      // Readings on the hour only, from 9:00. `week` maps an hour to (value, window) at its start.
+      func onHour(_ week: [Int: (Double, Int)]) -> [PlanSample] {
+        week.map { h, v in
+          PlanSample(
+            at: ten.addingTimeInterval(Double(h - 10) * 3600 + 20), week: v.0,
+            weekReset: weekReset.addingTimeInterval(Double(v.1) * 604_800))
+        }
+      }
+      let rows = (9...12).map { row($0, "claude", output: 0, cached: $0 == 11 ? 10_000 : 1_000) }
+      func est(_ s: [PlanSample], _ r: [UsageRow]) -> LimitCapacity? {
+        limitCapacity(s, .weekly, hourly: r, through: end, minPoints: 1)
+      }
+      // A new window that starts higher than the old one ended isn't a rise.
+      precondition(est(onHour([10: (5, 0), 11: (30, 1)]), rows) == nil)
+      // Hours that end at 100 % don't count, the one reaching it included: only 9:00, 80 -> 90 on 1 000 tokens.
+      let capped = onHour([9: (80, 0), 10: (90, 0), 11: (100, 0), 12: (100, 0)])
+      precondition(est(capped, rows)?.tokens == 10_000)
+      // An hour without a reading near its start or end is skipped, not measured from a far one.
+      precondition(est(onHour([9: (10, 0), 11: (30, 0)]), rows) == nil)
+      // Points without any Claude Code tokens (all of it on claude.ai) give no estimate rather than 0.
+      precondition(est(onHour([10: (10, 0), 11: (30, 0)]), []) == nil)
+      let text = capacityText(LimitCapacity(tokens: 108_049_999.6, output: 937_600, points: 1))
+      precondition(text == "Celý limit ≈ 108.0 M tokenov (937.6 k output)")
     }
     print("PASS: plan usage parsing, clamping, week elapsed, projection and runs-out time, limit forecasts")
 

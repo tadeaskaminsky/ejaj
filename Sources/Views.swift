@@ -264,7 +264,8 @@ private let slovakTime: DateFormatter = {
   // Claude plan limits (5-hour and weekly), read every 5 minutes. A failed read keeps the last numbers.
   @Published var plan: PlanLimits?
   @Published var planState = PlanState.loading
-  // Readings of the plan limits over the last 24 hours, for the forecasts. Kept across launches.
+  // Readings of the plan limits over the last 7 days, for the forecasts and the capacity estimate. Kept across
+  // launches.
   @Published var planSamples: [PlanSample] =
     UserDefaults.standard.data(forKey: "planSamples").flatMap { try? JSONDecoder().decode([PlanSample].self, from: $0) }
     ?? []
@@ -278,6 +279,17 @@ private let slovakTime: DateFormatter = {
     return (
       plan?.fiveHour.flatMap { fiveHourForecast($0, samples: planSamples, now: now) },
       plan?.weekly.flatMap { weeklyForecast($0, samples: planSamples, now: now) }
+    )
+  }
+  // How many Claude Code tokens a whole session and a whole week hold, from the readings of the last 7 days.
+  func limitCapacities() -> (five: LimitCapacity?, week: LimitCapacity?) {
+    guard let data = dataset, let hourly = data.hourly, let through = isoDate(data.updatedAt) else { return (nil, nil) }
+    // A day more than the readings go back, so the first day's hours are all there.
+    let from = dayFormatter.string(from: through.addingTimeInterval(-691_200))
+    let recent = hourly.filter { $0.date >= from }
+    return (
+      limitCapacity(planSamples, .fiveHour, hourly: recent, through: through, minPoints: 20),
+      limitCapacity(planSamples, .weekly, hourly: recent, through: through, minPoints: 5)
     )
   }
   // The quick view's help card, shown in place of its figures.
@@ -1201,7 +1213,9 @@ struct PlanBanner: View {
         Text(trailing(plan, five: forecasts.five)).foregroundStyle(muted)
       }.font(.system(size: 13).monospacedDigit()).foregroundStyle(color).lineLimit(1).padding(.horizontal, 12)
         .padding(.vertical, 8).background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
-        .help("Claude plan usage as Claude Code's /usage reports it, read every 5 minutes. Click to refresh.")
+        .help(
+          "Claude plan usage as Claude Code's /usage reports it, read every 5 minutes. Click to refresh."
+            + (store.limitCapacities().week.map { "\n" + weekCapacityHelp($0) } ?? ""))
         .onTapGesture { store.refreshPlan(force: true) }
     } else if let note = note {
       HStack(spacing: 10) {
@@ -1307,16 +1321,22 @@ struct QuickView: View {
           .font(.system(size: 13, weight: .bold)).foregroundStyle(store.festive ? Xmas.gold : orange)
       }
       if let plan = store.plan, plan.fiveHour != nil || plan.weekly != nil {
-        let f = store.limitForecasts(), now = Date()
+        let f = store.limitForecasts(), c = store.limitCapacities(), now = Date()
         VStack(alignment: .leading, spacing: 12) {
           Text("LIMITY CLAUDE").font(.system(size: 11, weight: .heavy)).tracking(0.8).foregroundStyle(muted)
           if let w = plan.fiveHour {
-            LimitRow(title: "Session (5 h)", used: w.used, line: limitText(w, f.five, now: now, time: slovakClock.string))
+            LimitRow(
+              title: "Session (5 h)", used: w.used, line: limitText(w, f.five, now: now, time: slovakClock.string),
+              capacity: c.five.map(capacityText))
           }
           if let w = plan.weekly {
-            LimitRow(title: "Týždeň", used: w.used, line: limitText(w, f.week, now: now, time: slovakTime.string))
+            LimitRow(
+              title: "Týždeň", used: w.used, line: limitText(w, f.week, now: now, time: slovakTime.string),
+              capacity: c.week.map(capacityText))
           }
-        }.help("Odhad podľa tempa: pri session posledných 45 minút, pri týždni rýchlejšie z tempa celého týždňa a posledných 24 hodín.")
+        }.help(
+          "Odhad podľa tempa: pri session posledných 45 minút, pri týždni rýchlejšie z tempa celého týždňa a posledných 24 hodín. Celý limit: koľko tokenov Claude Code sa doň zmestí pri tvojom mixe modelov za posledných 7 dní."
+        )
       }
       Button(action: open) {
         HStack {
@@ -1332,7 +1352,7 @@ struct QuickView: View {
 }
 // One Claude limit in the quick view: how much is used and, under it, when it runs out or whether it lasts.
 struct LimitRow: View {
-  var title: String; var used: Double; var line: (text: String, mood: LimitMood)
+  var title: String; var used: Double; var line: (text: String, mood: LimitMood); var capacity: String? = nil
   var body: some View {
     let red = Color(red: 0.93, green: 0.33, blue: 0.33), green = Color(red: 0.30, green: 0.74, blue: 0.45)
     let color: Color = line.mood == .out || line.mood == .runsOut ? red : line.mood == .lasts ? green : muted
@@ -1345,6 +1365,10 @@ struct LimitRow: View {
         GeometryReader { g in Capsule().fill(color).frame(width: g.size.width * min(used, 100) / 100) }
       }
       Text(line.text).font(.system(size: 12, weight: .medium)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+      if let capacity {
+        Text(capacity).font(.system(size: 11).monospacedDigit()).foregroundStyle(muted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
   }
 }

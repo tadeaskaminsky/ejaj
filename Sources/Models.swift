@@ -1285,7 +1285,7 @@ let helpTopics: [String: HelpTopic] = [
     title: "Calendar",
     lines: [
       "One month with each day's API cost. Darker days cost more and the month's dearest day has a flame. ‹ and › change the month.",
-      "Claude week above the grid is your plan's weekly limit, the same numbers as /usage in Claude Code, and where the week is heading at this pace. A click reads it again.",
+      "Claude week above the grid is your plan's weekly limit, the same numbers as /usage in Claude Code, and where the week is heading at this pace. Hover it for how many tokens a whole week holds. A click reads it again.",
       "Click a day for its hours and two banners: the day against the average same weekday, and its week against earlier weeks.",
     ]),
   "projects": HelpTopic(
